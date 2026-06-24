@@ -4,18 +4,23 @@ import Navbar from '../components/Navbar'
 import FilterSidebar from '../components/FilterSidebar'
 import ProjectCard from '../components/ProjectCard'
 import ProjectDetail from '../components/ProjectDetail'
+import PaymentPlanModal from '../components/PaymentPlanModal'
 
 const emptyFilters = () => ({
   cities: new Set(),
   developers: new Set(),
+  compounds: new Set(),
   types: new Set(),
   bedrooms: new Set(),
-  delivery: new Set(),
+  finishing: new Set(),
   status: new Set(),
+  deliveryFrom: null,
+  deliveryTo: null,
   buaMin: null,
   buaMax: null,
   priceMin: null,
   priceMax: null,
+  paymentPlan: null, // set by the modal
 })
 
 export default function Projects() {
@@ -26,6 +31,7 @@ export default function Projects() {
   const [filters, setFilters] = useState(emptyFilters())
   const [selected, setSelected] = useState(null)
   const [saved, setSaved] = useState(() => loadSaved())
+  const [planOpen, setPlanOpen] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -45,24 +51,21 @@ export default function Projects() {
     }
   }, [])
 
-  // Build facet lists from loaded data
+  // Facet lists from loaded data (cities, developers, compounds)
   const facets = useMemo(() => {
     const cities = new Set()
     const developers = new Set()
-    const types = new Set()
+    const compounds = new Set()
     for (const p of projects) {
       if (p.city) cities.add(p.city)
       if (p.developer_name) developers.add(p.developer_name)
-      if (p.dominant_type) types.add(p.dominant_type)
+      if (p.area) compounds.add(p.area)
+      else if (p.name) compounds.add(p.name) // fall back to project name as compound
     }
-    // common unit types fallback
-    ;['apartment', 'villa', 'townhouse', 'twinhouse', 'ivilla', 'duplex', 'penthouse', 'chalet'].forEach((t) =>
-      types.add(t)
-    )
     return {
       cities: [...cities].sort(),
       developers: [...developers].sort(),
-      types: [...types].sort(),
+      compounds: [...compounds].sort(),
     }
   }, [projects])
 
@@ -76,13 +79,27 @@ export default function Projects() {
       }
       if (filters.cities.size && !filters.cities.has(p.city)) return false
       if (filters.developers.size && !filters.developers.has(p.developer_name)) return false
+      if (filters.compounds.size && !filters.compounds.has(p.area) && !filters.compounds.has(p.name)) return false
       if (filters.status.size && !filters.status.has(p.status)) return false
+      if (filters.finishing.size && !filters.finishing.has(p.finishing)) return false
+
+      // Type filter (project's dominant type, fallback: match any)
+      if (filters.types.size && p.dominant_type && !filters.types.has(p.dominant_type)) return false
+
+      // Price (project start price)
       if (filters.priceMin && p.start_price && p.start_price < filters.priceMin) return false
       if (filters.priceMax && p.start_price && p.start_price > filters.priceMax) return false
-      if (filters.delivery.size) {
-        const y = Math.ceil(p.delivery_years || 0)
-        const match = [...filters.delivery].some((f) => (f === 5 ? y >= 5 : y === f))
-        if (!match) return false
+
+      // Delivery From/To range (in years; RTM = 0)
+      const y = p.delivery_years != null ? Math.ceil(p.delivery_years) : null
+      if (filters.deliveryFrom != null && y != null && y < filters.deliveryFrom) return false
+      if (filters.deliveryTo != null && y != null && y > filters.deliveryTo) return false
+
+      // Payment plan budget (applies to project start price as a coarse filter)
+      const pp = filters.paymentPlan
+      if (pp?.active) {
+        if (pp.budgetFrom && p.start_price && p.start_price < pp.budgetFrom) return false
+        if (pp.budgetTo && p.start_price && p.start_price > pp.budgetTo) return false
       }
       return true
     })
@@ -98,13 +115,7 @@ export default function Projects() {
 
   return (
     <div className="h-screen flex flex-col">
-      <Navbar
-        search={search}
-        onSearch={setSearch}
-        count={filtered.length}
-        type={type}
-        onType={setType}
-      />
+      <Navbar search={search} onSearch={setSearch} count={filtered.length} type={type} onType={setType} />
       <div className="flex-1 flex overflow-hidden">
         <FilterSidebar
           filters={filters}
@@ -112,6 +123,7 @@ export default function Projects() {
           facets={facets}
           onClear={() => setFilters(emptyFilters())}
           onSearch={() => {}}
+          onOpenPaymentPlan={() => setPlanOpen(true)}
         />
 
         {/* Project list */}
@@ -121,9 +133,7 @@ export default function Projects() {
           ) : filtered.length === 0 ? (
             <div className="text-center py-10">
               <p className="text-ink-faint text-sm">No projects found.</p>
-              <p className="text-ink-faint text-xs mt-1">
-                Import data from the Admin panel to get started.
-              </p>
+              <p className="text-ink-faint text-xs mt-1">Import data from the Admin panel to get started.</p>
             </div>
           ) : (
             filtered.map((p) => (
@@ -139,14 +149,19 @@ export default function Projects() {
           )}
         </div>
 
-        {/* Detail */}
         <ProjectDetail project={selected} onClose={() => setSelected(null)} />
       </div>
+
+      <PaymentPlanModal
+        open={planOpen}
+        initial={filters.paymentPlan}
+        onClose={() => setPlanOpen(false)}
+        onApply={(plan) => setFilters((f) => ({ ...f, paymentPlan: plan }))}
+      />
     </div>
   )
 }
 
-// localStorage isn't available in some embedded contexts; guard it.
 function loadSaved() {
   try {
     return JSON.parse(localStorage.getItem('covo_saved') || '[]')
@@ -157,7 +172,5 @@ function loadSaved() {
 function persistSaved(arr) {
   try {
     localStorage.setItem('covo_saved', JSON.stringify(arr))
-  } catch {
-    /* ignore */
-  }
+  } catch {}
 }
