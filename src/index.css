@@ -1,0 +1,27 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+
+:root { color-scheme: dark; }
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  background: #0D1117;
+  color: #E2E8F0;
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Thin dark scrollbars */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #0D1117; }
+::-webkit-scrollbar-thumb { background: #2D3345; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #3a4258; }
+
+/* COVO logo bars */
+.covo-bars { display: flex; gap: 3px; }
+.covo-bars > span { height: 3px; border-radius: 2px; width: 18px; }
