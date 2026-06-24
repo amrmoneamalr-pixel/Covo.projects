@@ -215,6 +215,13 @@ alter table unit_layouts      enable row level security;
 alter table project_materials enable row level security;
 
 -- Public read
+drop policy if exists "public_read_developers"        on developers;
+drop policy if exists "public_read_projects"          on projects;
+drop policy if exists "public_read_payment_plans"     on payment_plans;
+drop policy if exists "public_read_units"             on units;
+drop policy if exists "public_read_unit_layouts"      on unit_layouts;
+drop policy if exists "public_read_project_materials" on project_materials;
+
 create policy "public_read_developers"        on developers        for select using (true);
 create policy "public_read_projects"          on projects          for select using (true);
 create policy "public_read_payment_plans"     on payment_plans     for select using (true);
@@ -225,6 +232,13 @@ create policy "public_read_project_materials" on project_materials for select us
 -- Anon write (admin panel). NOTE: this lets anyone with the anon key write.
 -- Acceptable for a private internal tool. Replace with auth-gated policies
 -- (e.g. auth.role() = 'authenticated') when you add Supabase Auth.
+drop policy if exists "anon_write_developers"        on developers;
+drop policy if exists "anon_write_projects"          on projects;
+drop policy if exists "anon_write_payment_plans"     on payment_plans;
+drop policy if exists "anon_write_units"             on units;
+drop policy if exists "anon_write_unit_layouts"      on unit_layouts;
+drop policy if exists "anon_write_project_materials" on project_materials;
+
 create policy "anon_write_developers"        on developers        for all using (true) with check (true);
 create policy "anon_write_projects"          on projects          for all using (true) with check (true);
 create policy "anon_write_payment_plans"     on payment_plans     for all using (true) with check (true);
@@ -238,6 +252,11 @@ create policy "anon_write_project_materials" on project_materials for all using 
 insert into storage.buckets (id, name, public)
 values ('project-assets', 'project-assets', true)
 on conflict (id) do nothing;
+
+drop policy if exists "public_read_assets"  on storage.objects;
+drop policy if exists "anon_upload_assets"  on storage.objects;
+drop policy if exists "anon_update_assets"  on storage.objects;
+drop policy if exists "anon_delete_assets"  on storage.objects;
 
 create policy "public_read_assets"
   on storage.objects for select
@@ -290,3 +309,15 @@ drop trigger if exists trg_units_dominant_type on units;
 create trigger trg_units_dominant_type
   after insert or update or delete on units
   for each row execute function recalc_dominant_type();
+
+-- ============================================================
+-- MIGRATION 2: developers-master classification flags
+-- (run on existing DB; safe with IF NOT EXISTS)
+-- ============================================================
+alter table projects add column if not exists is_mixed boolean default false;
+alter table projects add column if not exists is_commercial boolean default false;
+alter table projects add column if not exists is_residential boolean default true;
+alter table projects add column if not exists is_medical boolean default false;
+alter table projects add column if not exists is_administrative boolean default false;
+alter table projects add column if not exists is_coastal boolean default false;
+alter table projects add column if not exists types_raw text;
