@@ -72,7 +72,14 @@ export default function Projects() {
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
     return projects.filter((p) => {
-      if (type && p.type && p.type !== type) return false
+      // Residential / Commercial toggle — mixed projects show in both
+      if (type === 'residential') {
+        const ok = p.is_residential || p.is_mixed || p.type === 'residential' || (!p.is_commercial && p.type !== 'commercial')
+        if (!ok) return false
+      } else if (type === 'commercial') {
+        const ok = p.is_commercial || p.is_mixed || p.type === 'commercial'
+        if (!ok) return false
+      }
       if (q) {
         const hay = `${p.name} ${p.developer_name} ${p.city} ${p.location} ${p.area}`.toLowerCase()
         if (!hay.includes(q)) return false
