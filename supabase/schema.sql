@@ -258,3 +258,35 @@ create policy "anon_delete_assets"
 -- ============================================================
 -- DONE ✅
 -- ============================================================
+
+-- ============================================================
+-- MIGRATION: filter-support columns (run if upgrading an
+-- existing database; harmless on a fresh one since columns
+-- are created with IF NOT EXISTS).
+-- ============================================================
+alter table projects add column if not exists finishing text;     -- fully_finished | semi_finished | not_finished | core_shell
+alter table projects add column if not exists dominant_type text; -- most common unit_type, for Types filter
+
+-- Recompute dominant_type whenever units change
+create or replace function recalc_dominant_type()
+returns trigger as $$
+begin
+  update projects p
+  set dominant_type = (
+    select u.unit_type
+    from units u
+    where u.project_id = coalesce(new.project_id, old.project_id)
+      and u.unit_type is not null
+    group by u.unit_type
+    order by count(*) desc
+    limit 1
+  )
+  where p.id = coalesce(new.project_id, old.project_id);
+  return null;
+end;
+$$ language plpgsql;
+
+drop trigger if exists trg_units_dominant_type on units;
+create trigger trg_units_dominant_type
+  after insert or update or delete on units
+  for each row execute function recalc_dominant_type();
