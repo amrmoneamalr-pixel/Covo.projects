@@ -63,8 +63,16 @@ function guessBedrooms(...texts) {
 export function detectExcelFormat(workbook) {
   const firstSheet = workbook.Sheets[workbook.SheetNames[0]]
   const rows = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: null })
-  const header = (rows[0] || []).map((h) => str(h).toLowerCase())
+  const header = (rows[0] || []).map((h) => str(h).toLowerCase().replace(/"/g, '').trim())
 
+  // Developers master sheet: Developer + Project Name + Locations + Types
+  if (
+    header.some((h) => h === 'developer') &&
+    header.some((h) => h.includes('project name')) &&
+    header.some((h) => h.includes('type'))
+  ) {
+    return 'developers_master'
+  }
   // Madinet Masr: single sheet with a "Project" column + "Nominal Price"
   if (header.includes('project') && header.some((h) => h.includes('nominal'))) {
     return 'madinet_masr'
@@ -75,6 +83,30 @@ export function detectExcelFormat(workbook) {
   }
   // Fallback: try to be generic
   return 'generic'
+}
+
+// ============================================================
+// Classify a project's category text into residential | commercial
+// and extract sub-flags (medical, administrative, coastal, retail).
+// Anything commercial / administrative / medical / retail -> commercial.
+// ============================================================
+export function classifyProjectType(typesText = '') {
+  const t = typesText.toLowerCase()
+  const flags = {
+    residential: /residential|coastal|coastal/.test(t),
+    commercial: /commercial|administ|medical|retail|office|clinic|pharmac/.test(t),
+    medical: /medical|clinic|pharmac/.test(t),
+    administrative: /administ|office|admin/.test(t),
+    coastal: /coastal|coast/.test(t),
+  }
+  // Decide the primary bucket the project lives in.
+  // If it has any commercial/medical/admin element -> commercial bucket.
+  // Pure residential / coastal -> residential.
+  let primary = 'residential'
+  if (flags.commercial && !flags.residential) primary = 'commercial'
+  else if (flags.commercial && flags.residential) primary = 'mixed'
+  else primary = 'residential'
+  return { primary, flags }
 }
 
 // ============================================================
@@ -191,12 +223,18 @@ function parseGeneric(workbook) {
 }
 
 // ============================================================
-// MAIN: parse an uploaded Excel File -> { format, units, projects }
+// MAIN: parse an uploaded Excel/CSV File -> { format, units, projects }
 // ============================================================
 export async function parseExcelFile(file) {
   const buf = await file.arrayBuffer()
   const workbook = XLSX.read(buf, { type: 'array', cellDates: true })
   const format = detectExcelFormat(workbook)
+
+  // Developers master sheet: projects-only (no units/prices yet)
+  if (format === 'developers_master') {
+    const projects = parseDevelopersMaster(workbook)
+    return { format, units: [], projects, isProjectsOnly: true }
+  }
 
   let units = []
   if (format === 'mountain_view') units = parseMountainView(workbook)
@@ -205,6 +243,71 @@ export async function parseExcelFile(file) {
 
   units = units.filter((u) => u.project_name && (u.unit_price || u.unit_code))
   return { format, units, projects: groupByProject(units, file.name) }
+}
+
+// ============================================================
+// DEVELOPERS MASTER SHEET
+// Columns: Developer | Project Name | Locations | Types
+// Creates project records (no units). Used to seed the database
+// with every developer + project + city + residential/commercial.
+// ============================================================
+function parseDevelopersMaster(workbook) {
+  const sheet = workbook.Sheets[workbook.SheetNames[0]]
+  const rows = XLSX.utils.sheet_to_json(sheet, { defval: null })
+
+  // Normalize location names to clean city labels
+  const cityMap = {
+    'october': '6th October',
+    '6th of october': '6th October',
+    'mostakbal': 'Mostakbal City',
+    'mostakbal city': 'Mostakbal City',
+    'ain elsokhna': 'Ain Sokhna',
+    'new alamin': 'New Alamein',
+    'alexanderia': 'Alexandria',
+  }
+  const cleanCity = (loc) => {
+    const s = str(loc)
+    const key = s.toLowerCase()
+    return cityMap[key] || (s ? s.charAt(0).toUpperCase() + s.slice(1) : s)
+  }
+
+  const projects = []
+  for (const r of rows) {
+    // tolerate quoted/spaced header keys
+    const get = (needle) => {
+      const k = Object.keys(r).find((key) =>
+        key.toLowerCase().replace(/"/g, '').trim().includes(needle)
+      )
+      return k ? str(r[k]).replace(/"/g, '').trim() : ''
+    }
+    const developer = get('developer')
+    const name = get('project name') || get('project')
+    const location = get('location')
+    const typesText = get('type')
+    if (!developer && !name) continue
+    if (!name) continue
+
+    const { primary, flags } = classifyProjectType(typesText)
+
+    projects.push({
+      name,
+      developer_name: developer,
+      city: cleanCity(location),
+      type: primary === 'commercial' ? 'commercial' : 'residential', // mixed -> shows in both via is_mixed
+      is_mixed: primary === 'mixed',
+      is_commercial: flags.commercial,
+      is_residential: flags.residential || primary === 'residential',
+      is_medical: flags.medical,
+      is_administrative: flags.administrative,
+      is_coastal: flags.coastal,
+      types_raw: typesText,
+      status: 'available',
+      source: 'developers_master',
+      units: [],
+      plans: [],
+    })
+  }
+  return projects
 }
 
 // ============================================================
