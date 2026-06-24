@@ -42,6 +42,7 @@ export default function ManageProjects() {
       acres: numOrNull(form.acres),
       type: form.type || 'residential',
       status: form.status || 'available',
+      finishing: form.finishing || null,
       launch_date: form.launch_date || null,
       delivery_years: numOrNull(form.delivery_years),
       delivery_label: form.delivery_label,
@@ -209,6 +210,20 @@ export default function ManageProjects() {
                   <option value="available">Available</option>
                   <option value="coming_soon">Coming Soon</option>
                   <option value="sold_out">Sold Out</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-ink-faint">Finishing</label>
+                <select
+                  value={form.finishing || ''}
+                  onChange={(e) => set('finishing', e.target.value)}
+                  className="w-full bg-bg-card border border-line rounded-lg px-3 py-2 text-sm text-ink mt-1"
+                >
+                  <option value="">— Not set —</option>
+                  <option value="fully_finished">Fully Finished</option>
+                  <option value="semi_finished">Semi Finished</option>
+                  <option value="not_finished">Not Finished</option>
+                  <option value="core_shell">Core &amp; Shell</option>
                 </select>
               </div>
               <label className="flex items-center gap-2 text-sm text-ink-muted col-span-2 mt-1">
