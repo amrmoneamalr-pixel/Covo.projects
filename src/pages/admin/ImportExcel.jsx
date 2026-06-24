@@ -6,6 +6,7 @@ import { parseExcelFile, parseWhatsApp } from '../../utils/parsers'
 const fmt = (n) => (n == null ? '—' : new Intl.NumberFormat('en-US').format(Math.round(n)))
 
 const FORMAT_LABELS = {
+  developers_master: 'Developers Master (projects + developers + types)',
   mountain_view: 'Mountain View (sheet per project)',
   madinet_masr: 'Madinet Masr (single sheet)',
   generic: 'Generic Excel',
@@ -77,13 +78,26 @@ export default function ImportExcel() {
         const projectRow = {
           name: proj.name,
           developer_name: proj.developer_name || null,
-          type: 'residential',
+          type: proj.type || 'residential',
+          city: proj.city || null,
           status: proj.status || 'available',
           start_price: proj.start_price ?? null,
           delivery_years: proj.delivery_years ?? null,
           delivery_label: proj.delivery_label ?? null,
           source: parsed.format,
           updated_at: new Date().toISOString(),
+        }
+        // developers_master carries classification flags
+        if (parsed.format === 'developers_master') {
+          projectRow.is_mixed = !!proj.is_mixed
+          projectRow.is_commercial = !!proj.is_commercial
+          projectRow.is_residential = !!proj.is_residential
+          projectRow.is_medical = !!proj.is_medical
+          projectRow.is_administrative = !!proj.is_administrative
+          projectRow.is_coastal = !!proj.is_coastal
+          projectRow.types_raw = proj.types_raw || null
+          // don't wipe a price that a prior availability import set
+          delete projectRow.start_price
         }
 
         let projectId
@@ -101,7 +115,8 @@ export default function ImportExcel() {
         }
         projCount++
 
-        // 2) replace units for this project (delete old from same source, insert fresh)
+        // 2) replace units for this project (skip for projects-only imports)
+        if (!parsed.isProjectsOnly && proj.units.length > 0) {
         await supabase
           .from('units')
           .delete()
@@ -140,6 +155,7 @@ export default function ImportExcel() {
           if (error) throw error
           unitCount += chunk.length
         }
+        } // end units block
 
         // 3) payment plans (from WhatsApp)
         if (proj.plans?.length) {
@@ -161,7 +177,9 @@ export default function ImportExcel() {
 
       setStatus({
         type: 'success',
-        msg: `Imported ${unitCount} units across ${projCount} projects ✓`,
+        msg: parsed.isProjectsOnly
+          ? `Imported ${projCount} projects (developers + cities + types) ✓`
+          : `Imported ${unitCount} units across ${projCount} projects ✓`,
       })
       setParsed(null)
       setWaText('')
@@ -267,7 +285,8 @@ export default function ImportExcel() {
                 Detected: <span className="text-covo-gold">{FORMAT_LABELS[parsed.format]}</span>
               </p>
               <p className="text-xs text-ink-muted">
-                {parsed.projects.length} projects · {parsed.units.length} units
+                {parsed.projects.length} projects
+                {parsed.isProjectsOnly ? '' : ` · ${parsed.units.length} units`}
               </p>
             </div>
             <button
@@ -290,23 +309,48 @@ export default function ImportExcel() {
           <div className="border border-line rounded-lg overflow-hidden max-h-96 overflow-y-auto">
             <table className="w-full text-xs">
               <thead className="sticky top-0 bg-bg-sidebar">
-                <tr className="text-ink-faint">
-                  <th className="text-left py-2 px-3 font-medium">Project</th>
-                  <th className="text-right py-2 px-3 font-medium">Units</th>
-                  <th className="text-right py-2 px-3 font-medium">Start Price</th>
-                  <th className="text-left py-2 px-3 font-medium">Types</th>
-                  <th className="text-right py-2 px-3 font-medium">Plans</th>
-                </tr>
+                {parsed.isProjectsOnly ? (
+                  <tr className="text-ink-faint">
+                    <th className="text-left py-2 px-3 font-medium">Project</th>
+                    <th className="text-left py-2 px-3 font-medium">Developer</th>
+                    <th className="text-left py-2 px-3 font-medium">City</th>
+                    <th className="text-left py-2 px-3 font-medium">Category</th>
+                  </tr>
+                ) : (
+                  <tr className="text-ink-faint">
+                    <th className="text-left py-2 px-3 font-medium">Project</th>
+                    <th className="text-right py-2 px-3 font-medium">Units</th>
+                    <th className="text-right py-2 px-3 font-medium">Start Price</th>
+                    <th className="text-left py-2 px-3 font-medium">Types</th>
+                    <th className="text-right py-2 px-3 font-medium">Plans</th>
+                  </tr>
+                )}
               </thead>
               <tbody>
-                {parsed.projects.map((p) => {
+                {parsed.projects.map((p, idx) => {
+                  if (parsed.isProjectsOnly) {
+                    const cat = p.is_mixed
+                      ? 'Residential + Commercial'
+                      : p.type === 'commercial'
+                      ? 'Commercial'
+                      : 'Residential'
+                    return (
+                      <tr key={p.name + idx} className="border-t border-line/40">
+                        <td className="py-2 px-3 text-ink font-medium">{p.name}</td>
+                        <td className="py-2 px-3 text-ink-muted">{p.developer_name}</td>
+                        <td className="py-2 px-3 text-ink-muted">{p.city}</td>
+                        <td className="py-2 px-3 text-ink-faint">{cat}</td>
+                      </tr>
+                    )
+                  }
                   const types = [...new Set(p.units.map((u) => u.unit_type))].filter(Boolean)
+                  const prices = p.units.map((u) => u.unit_price).filter(Boolean)
                   return (
-                    <tr key={p.name} className="border-t border-line/40">
+                    <tr key={p.name + idx} className="border-t border-line/40">
                       <td className="py-2 px-3 text-ink font-medium">{p.name}</td>
                       <td className="py-2 px-3 text-right text-ink-muted">{p.units.length}</td>
                       <td className="py-2 px-3 text-right text-covo-gold font-semibold">
-                        {fmt(p.start_price ?? Math.min(...p.units.map((u) => u.unit_price || Infinity)))} LE
+                        {prices.length ? fmt(p.start_price ?? Math.min(...prices)) + ' LE' : '—'}
                       </td>
                       <td className="py-2 px-3 text-ink-faint">{types.join(', ')}</td>
                       <td className="py-2 px-3 text-right text-ink-muted">{p.plans?.length || 0}</td>
