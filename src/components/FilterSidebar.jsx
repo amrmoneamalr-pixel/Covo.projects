@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ChevronDown, X } from 'lucide-react'
+import { ChevronDown, X, Search } from 'lucide-react'
 
 function Section({ title, children, defaultOpen = false }) {
   const [open, setOpen] = useState(defaultOpen)
@@ -33,7 +33,72 @@ function Check({ label, checked, onChange }) {
   )
 }
 
-export default function FilterSidebar({ filters, setFilters, facets, onClear, onSearch }) {
+// Pill-style selector (used for Bedrooms: Studio + 1..9)
+function Pills({ options, isActive, onToggle }) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {options.map((o) => (
+        <button
+          key={o.value}
+          onClick={() => onToggle(o.value)}
+          className={`min-w-[28px] px-2 py-1 rounded text-xs font-semibold transition-colors ${
+            isActive(o.value)
+              ? 'bg-covo-gold text-black'
+              : 'bg-bg-base text-ink-muted border border-line hover:text-ink'
+          }`}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+// The fixed Types list from Master V (always shown — never empty)
+const TYPE_OPTIONS = [
+  { value: 'apartment', label: 'Apartment' },
+  { value: 'penthouse', label: 'Penthouse' },
+  { value: 'duplex', label: 'Duplex' },
+  { value: 'villa', label: 'Villas' },
+  { value: 'townhouse', label: 'Townhouse' },
+  { value: 'twinhouse', label: 'Twinhouse' },
+  { value: 'ivilla', label: 'I-Villa' },
+  { value: 'chalet', label: 'Chalet' },
+  { value: 'service', label: 'Service & Hotels' },
+]
+
+const FINISHING_OPTIONS = [
+  { value: 'fully_finished', label: 'Fully Finished' },
+  { value: 'semi_finished', label: 'Semi Finished' },
+  { value: 'not_finished', label: 'Not Finished' },
+  { value: 'core_shell', label: 'Core & Shell' },
+]
+
+const DELIVERY_OPTIONS = [
+  { value: 0, label: 'RTM' },
+  { value: 1, label: '1 Years' },
+  { value: 2, label: '2 Years' },
+  { value: 3, label: '3 Years' },
+  { value: 4, label: '4 Years' },
+  { value: 5, label: '5 Years' },
+]
+
+const BEDROOM_OPTIONS = [
+  { value: 0, label: 'Studio' },
+  ...Array.from({ length: 9 }, (_, i) => ({ value: i + 1, label: String(i + 1) })),
+]
+
+export default function FilterSidebar({
+  filters,
+  setFilters,
+  facets,
+  onClear,
+  onSearch,
+  onOpenPaymentPlan,
+}) {
+  const [compoundQuery, setCompoundQuery] = useState('')
+  const [developerQuery, setDeveloperQuery] = useState('')
+
   const toggle = (key, value) => {
     setFilters((f) => {
       const set = new Set(f[key])
@@ -41,76 +106,163 @@ export default function FilterSidebar({ filters, setFilters, facets, onClear, on
       return { ...f, [key]: set }
     })
   }
-
   const has = (key, value) => filters[key].has(value)
+  const setField = (k, v) => setFilters((f) => ({ ...f, [k]: v }))
+
+  const compounds = (facets.compounds || []).filter((c) =>
+    c.toLowerCase().includes(compoundQuery.toLowerCase())
+  )
+  const developers = (facets.developers || []).filter((d) =>
+    d.toLowerCase().includes(developerQuery.toLowerCase())
+  )
 
   return (
     <aside className="w-60 bg-bg-sidebar border-r border-line flex flex-col shrink-0 overflow-hidden">
       <div className="flex-1 overflow-y-auto">
+        {/* Cities */}
         <Section title="Cities" defaultOpen>
-          {facets.cities.length === 0 && (
-            <p className="text-[11px] text-ink-faint">No data yet</p>
+          {facets.cities.length === 0 ? (
+            <p className="text-[11px] text-ink-faint">No cities in data yet</p>
+          ) : (
+            facets.cities.map((c) => (
+              <Check key={c} label={c} checked={has('cities', c)} onChange={() => toggle('cities', c)} />
+            ))
           )}
-          {facets.cities.map((c) => (
-            <Check key={c} label={c} checked={has('cities', c)} onChange={() => toggle('cities', c)} />
-          ))}
         </Section>
 
-        <Section title="Developer">
-          {facets.developers.map((d) => (
-            <Check key={d} label={d} checked={has('developers', d)} onChange={() => toggle('developers', d)} />
-          ))}
-        </Section>
-
-        <Section title="Unit Types">
-          {facets.types.map((t) => (
-            <Check key={t} label={cap(t)} checked={has('types', t)} onChange={() => toggle('types', t)} />
-          ))}
-        </Section>
-
-        <Section title="Bedrooms">
-          {[1, 2, 3, 4, 5].map((b) => (
+        {/* Types — fixed list */}
+        <Section title="Types">
+          {TYPE_OPTIONS.map((t) => (
             <Check
-              key={b}
-              label={b === 5 ? '5+' : `${b} Bedroom${b > 1 ? 's' : ''}`}
-              checked={has('bedrooms', b)}
-              onChange={() => toggle('bedrooms', b)}
+              key={t.value}
+              label={t.label}
+              checked={has('types', t.value)}
+              onChange={() => toggle('types', t.value)}
             />
           ))}
         </Section>
 
+        {/* Bedrooms — Studio + 1..9 as pills */}
+        <Section title="Bedrooms">
+          <Pills
+            options={BEDROOM_OPTIONS}
+            isActive={(v) => has('bedrooms', v)}
+            onToggle={(v) => toggle('bedrooms', v)}
+          />
+        </Section>
+
+        {/* Finishing — manual data from Admin */}
+        <Section title="Finishing">
+          {FINISHING_OPTIONS.map((f) => (
+            <Check
+              key={f.value}
+              label={f.label}
+              checked={has('finishing', f.value)}
+              onChange={() => toggle('finishing', f.value)}
+            />
+          ))}
+        </Section>
+
+        {/* Delivery — From / To */}
+        <Section title="Delivery">
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <p className="text-[10px] text-ink-faint mb-1">From</p>
+              {DELIVERY_OPTIONS.map((d) => (
+                <Check
+                  key={'df' + d.value}
+                  label={d.label}
+                  checked={filters.deliveryFrom === d.value}
+                  onChange={() =>
+                    setField('deliveryFrom', filters.deliveryFrom === d.value ? null : d.value)
+                  }
+                />
+              ))}
+            </div>
+            <div>
+              <p className="text-[10px] text-ink-faint mb-1">To</p>
+              {DELIVERY_OPTIONS.map((d) => (
+                <Check
+                  key={'dt' + d.value}
+                  label={d.label}
+                  checked={filters.deliveryTo === d.value}
+                  onChange={() =>
+                    setField('deliveryTo', filters.deliveryTo === d.value ? null : d.value)
+                  }
+                />
+              ))}
+            </div>
+          </div>
+        </Section>
+
+        {/* Payment Plan — opens modal */}
+        <div className="border-b border-line">
+          <button
+            onClick={onOpenPaymentPlan}
+            className="w-full flex items-center justify-between px-4 py-3 text-xs font-semibold text-ink hover:bg-bg-hover transition-colors"
+          >
+            Payment Plan
+            <span className="text-[10px] text-covo-gold">Open</span>
+          </button>
+        </div>
+
+        {/* Built Up Area — From / To */}
         <Section title="Built Up Area (m²)">
           <RangeInputs
             min={filters.buaMin}
             max={filters.buaMax}
-            onMin={(v) => setFilters((f) => ({ ...f, buaMin: v }))}
-            onMax={(v) => setFilters((f) => ({ ...f, buaMax: v }))}
+            onMin={(v) => setField('buaMin', v)}
+            onMax={(v) => setField('buaMax', v)}
           />
         </Section>
 
+        {/* Price — From / To */}
         <Section title="Price (LE)">
           <RangeInputs
             min={filters.priceMin}
             max={filters.priceMax}
-            onMin={(v) => setFilters((f) => ({ ...f, priceMin: v }))}
-            onMax={(v) => setFilters((f) => ({ ...f, priceMax: v }))}
+            onMin={(v) => setField('priceMin', v)}
+            onMax={(v) => setField('priceMax', v)}
           />
         </Section>
 
-        <Section title="Delivery">
-          {[1, 2, 3, 4, 5].map((y) => (
-            <Check
-              key={y}
-              label={y === 5 ? '5+ Years' : `${y} Year${y > 1 ? 's' : ''}`}
-              checked={has('delivery', y)}
-              onChange={() => toggle('delivery', y)}
-            />
-          ))}
+        {/* Compound — search + list */}
+        <Section title="Compound">
+          <SearchBox value={compoundQuery} onChange={setCompoundQuery} placeholder="search ..." />
+          <div className="max-h-48 overflow-y-auto mt-2 space-y-1">
+            {compounds.length === 0 ? (
+              <p className="text-[11px] text-ink-faint">No compounds match</p>
+            ) : (
+              compounds.map((c) => (
+                <Check key={c} label={c} checked={has('compounds', c)} onChange={() => toggle('compounds', c)} />
+              ))
+            )}
+          </div>
         </Section>
 
+        {/* Developer — search + list */}
+        <Section title="Developer">
+          <SearchBox value={developerQuery} onChange={setDeveloperQuery} placeholder="search ..." />
+          <div className="max-h-48 overflow-y-auto mt-2 space-y-1">
+            {developers.length === 0 ? (
+              <p className="text-[11px] text-ink-faint">No developers match</p>
+            ) : (
+              developers.map((d) => (
+                <Check key={d} label={d} checked={has('developers', d)} onChange={() => toggle('developers', d)} />
+              ))
+            )}
+          </div>
+        </Section>
+
+        {/* Status */}
         <Section title="Status">
           {['available', 'coming_soon', 'sold_out'].map((s) => (
-            <Check key={s} label={cap(s.replace('_', ' '))} checked={has('status', s)} onChange={() => toggle('status', s)} />
+            <Check
+              key={s}
+              label={cap(s.replace('_', ' '))}
+              checked={has('status', s)}
+              onChange={() => toggle('status', s)}
+            />
           ))}
         </Section>
       </div>
@@ -134,6 +286,20 @@ export default function FilterSidebar({ filters, setFilters, facets, onClear, on
   )
 }
 
+function SearchBox({ value, onChange, placeholder }) {
+  return (
+    <div className="relative">
+      <Search className="w-3.5 h-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-ink-faint" />
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="w-full bg-bg-base border border-line rounded pl-7 pr-2 py-1.5 text-xs text-ink placeholder:text-ink-faint focus:outline-none focus:border-covo-gold/60"
+      />
+    </div>
+  )
+}
+
 function RangeInputs({ min, max, onMin, onMax }) {
   return (
     <div className="flex items-center gap-2">
@@ -141,7 +307,7 @@ function RangeInputs({ min, max, onMin, onMax }) {
         type="number"
         value={min || ''}
         onChange={(e) => onMin(e.target.value ? Number(e.target.value) : null)}
-        placeholder="Min"
+        placeholder="From"
         className="w-full bg-bg-base border border-line rounded px-2 py-1.5 text-xs text-ink placeholder:text-ink-faint focus:outline-none focus:border-covo-gold/60"
       />
       <span className="text-ink-faint text-xs">–</span>
@@ -149,7 +315,7 @@ function RangeInputs({ min, max, onMin, onMax }) {
         type="number"
         value={max || ''}
         onChange={(e) => onMax(e.target.value ? Number(e.target.value) : null)}
-        placeholder="Max"
+        placeholder="To"
         className="w-full bg-bg-base border border-line rounded px-2 py-1.5 text-xs text-ink placeholder:text-ink-faint focus:outline-none focus:border-covo-gold/60"
       />
     </div>
