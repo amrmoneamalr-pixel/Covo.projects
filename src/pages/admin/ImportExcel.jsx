@@ -226,7 +226,7 @@ export default function ImportExcel() {
           <Upload className="w-8 h-8 mx-auto mb-3 text-ink-faint" />
           <p className="text-sm text-ink">Drop an .xlsx file here or click to browse</p>
           <p className="text-xs text-ink-faint mt-1">
-            Mountain View, Madinet Masr, and generic formats supported
+            Developers sheet, Mountain View, Madinet Masr, CSV &amp; xlsx supported
           </p>
           <input
             type="file"
