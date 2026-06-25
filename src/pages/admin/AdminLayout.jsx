@@ -1,100 +1,120 @@
-import { useState } from 'react'
-import { Link, useLocation, Outlet, useNavigate } from 'react-router-dom'
-import { Upload, FolderCog, ArrowLeft, Lock } from 'lucide-react'
-import Logo from '../../components/Logo'
+import { useState } from "react";
+import { Navigate } from "react-router-dom";
+import ImportExcel from "./ImportExcel";
+import ManageProjects from "./ManageProjects";
+import Developers from "./Developers";
 
-const PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD || 'covo2026'
+const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD || "admin123";
+
+const TABS = [
+  { id: "developers", label: "المطورين", icon: "🏢" },
+  { id: "import",     label: "استيراد بيانات", icon: "📤" },
+  { id: "manage",     label: "إدارة المشاريع", icon: "⚙️" },
+];
 
 export default function AdminLayout() {
-  const [authed, setAuthed] = useState(() => {
-    try {
-      return sessionStorage.getItem('covo_admin') === 'ok'
-    } catch {
-      return false
-    }
-  })
-  const [pw, setPw] = useState('')
-  const [err, setErr] = useState(false)
-  const loc = useLocation()
+  const [authed, setAuthed] = useState(
+    () => sessionStorage.getItem("covo_admin") === "1"
+  );
+  const [pw, setPw]         = useState("");
+  const [err, setErr]       = useState(false);
+  const [activeTab, setActiveTab] = useState("developers");
 
-  const login = () => {
-    if (pw === PASSWORD) {
-      setAuthed(true)
-      try {
-        sessionStorage.setItem('covo_admin', 'ok')
-      } catch {}
+  function handleLogin() {
+    if (pw === ADMIN_PASSWORD) {
+      sessionStorage.setItem("covo_admin", "1");
+      setAuthed(true);
     } else {
-      setErr(true)
+      setErr(true);
+      setTimeout(() => setErr(false), 2000);
     }
   }
 
+  function handleLogout() {
+    sessionStorage.removeItem("covo_admin");
+    setAuthed(false);
+  }
+
+  /* ── Login screen ── */
   if (!authed) {
     return (
-      <div className="h-screen flex items-center justify-center">
-        <div className="bg-bg-card border border-line rounded-xl p-8 w-80">
-          <div className="flex justify-center mb-6">
-            <Logo size="md" />
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4" dir="rtl">
+        <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-8">
+          <div className="text-center mb-8">
+            <div className="text-4xl mb-3">🔐</div>
+            <h1 className="text-xl font-bold text-gray-900">لوحة الإدارة</h1>
+            <p className="text-sm text-gray-400 mt-1">COVO Projects</p>
           </div>
-          <div className="flex items-center gap-2 text-ink-muted text-sm mb-3">
-            <Lock className="w-4 h-4" /> Admin Access
+          <div className="space-y-4">
+            <input
+              type="password"
+              value={pw}
+              onChange={(e) => setPw(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleLogin()}
+              placeholder="كلمة المرور"
+              className={`w-full border rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 transition-colors ${
+                err
+                  ? "border-red-300 focus:ring-red-200"
+                  : "border-gray-200 focus:ring-[#B8860B]/30 focus:border-[#B8860B]"
+              }`}
+            />
+            {err && <p className="text-red-500 text-xs text-center">كلمة المرور غلط</p>}
+            <button
+              onClick={handleLogin}
+              className="w-full bg-[#B8860B] hover:bg-[#9a7009] text-white py-3 rounded-xl text-sm font-medium transition-colors"
+            >
+              دخول
+            </button>
           </div>
-          <input
-            type="password"
-            value={pw}
-            onChange={(e) => {
-              setPw(e.target.value)
-              setErr(false)
-            }}
-            onKeyDown={(e) => e.key === 'Enter' && login()}
-            placeholder="Password"
-            className="w-full bg-bg-base border border-line rounded-lg px-3 py-2 text-sm text-ink focus:outline-none focus:border-covo-gold/60"
-          />
-          {err && <p className="text-covo-pink text-xs mt-2">Wrong password</p>}
-          <button
-            onClick={login}
-            className="w-full bg-covo-gold text-black text-sm font-semibold py-2 rounded-lg mt-3 hover:opacity-90"
-          >
-            Enter
-          </button>
         </div>
       </div>
-    )
+    );
   }
 
-  const navItem = (to, icon, label) => {
-    const active = loc.pathname === to
-    return (
-      <Link
-        to={to}
-        className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm transition-colors ${
-          active ? 'bg-covo-gold text-black font-semibold' : 'text-ink-muted hover:bg-bg-hover hover:text-ink'
-        }`}
-      >
-        {icon} {label}
-      </Link>
-    )
-  }
-
+  /* ── Admin panel ── */
   return (
-    <div className="h-screen flex">
-      <aside className="w-56 bg-bg-sidebar border-r border-line flex flex-col p-3">
-        <div className="px-2 py-3 mb-2">
-          <Logo size="sm" />
+    <div className="min-h-screen bg-gray-50" dir="rtl">
+      {/* Top bar */}
+      <header className="bg-white border-b border-gray-200 sticky top-0 z-30">
+        <div className="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="font-bold text-[#B8860B] text-lg">COVO</span>
+            <span className="text-gray-300 text-sm">|</span>
+            <span className="text-gray-600 text-sm font-medium">لوحة الإدارة</span>
+          </div>
+          <button
+            onClick={handleLogout}
+            className="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1 transition-colors"
+          >
+            خروج ↩
+          </button>
         </div>
-        <nav className="space-y-1 flex-1">
-          {navItem('/admin', <Upload className="w-4 h-4" />, 'Import')}
-          {navItem('/admin/projects', <FolderCog className="w-4 h-4" />, 'Manage Projects')}
-        </nav>
-        <Link
-          to="/"
-          className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm text-ink-faint hover:text-ink"
-        >
-          <ArrowLeft className="w-4 h-4" /> Back to Site
-        </Link>
-      </aside>
-      <main className="flex-1 overflow-y-auto">
-        <Outlet />
+
+        {/* Tabs */}
+        <div className="max-w-6xl mx-auto px-4 flex gap-1 pb-0">
+          {TABS.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+                activeTab === tab.id
+                  ? "border-[#B8860B] text-[#B8860B]"
+                  : "border-transparent text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              <span>{tab.icon}</span>
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      </header>
+
+      {/* Content */}
+      <main className="max-w-6xl mx-auto">
+        {activeTab === "developers" && <Developers />}
+        {activeTab === "import"     && <ImportExcel />}
+        {activeTab === "manage"     && <ManageProjects />}
       </main>
     </div>
-  )
+  );
 }
