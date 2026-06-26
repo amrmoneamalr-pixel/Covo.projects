@@ -1,24 +1,37 @@
-import { useState, useEffect } from 'react'
-import { Loader2, Save, Upload, Wand2, Trash2 } from 'lucide-react'
+import { useState, useEffect, useMemo } from 'react'
+import { Loader2, Save, Upload, Wand2, Trash2, ChevronDown, X, Image as ImageIcon } from 'lucide-react'
 import { supabase, uploadAsset } from '../../lib/supabase'
 import { autoMatchAll } from '../../utils/layoutMatcher'
 import { normalizeUnitType } from '../../utils/parsers'
 
 export default function ManageProjects() {
   const [projects, setProjects] = useState([])
+  const [developers, setDevelopers] = useState([]) // [{id, name, logo_url}]
   const [selected, setSelected] = useState(null)
   const [form, setForm] = useState({})
   const [layouts, setLayouts] = useState([])
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
 
+  // NEW: developer filter
+  const [devFilterId, setDevFilterId] = useState('') // '' = all
+  const [devDropdownOpen, setDevDropdownOpen] = useState(false)
+  const [devSearch, setDevSearch] = useState('')
+
+  // NEW: developer-edit modal
+  const [editDev, setEditDev] = useState(null) // developer object
+  const [devSaving, setDevSaving] = useState(false)
+  const [devEditMsg, setDevEditMsg] = useState('')
+
   const load = async () => {
-    const { data } = await supabase.from('projects').select('*').order('name')
-    setProjects(data || [])
+    const [{ data: projs }, { data: devs }] = await Promise.all([
+      supabase.from('projects').select('*').order('name'),
+      supabase.from('developers').select('id, name, logo_url').order('name'),
+    ])
+    setProjects(projs || [])
+    setDevelopers(devs || [])
   }
-  useEffect(() => {
-    load()
-  }, [])
+  useEffect(() => { load() }, [])
 
   const pick = async (p) => {
     setSelected(p)
@@ -63,7 +76,7 @@ export default function ManageProjects() {
     }
   }
 
-  // Upload helpers
+  // Upload helpers (single project)
   const uploadFile = async (file, kind) => {
     if (!file || !selected) return
     setMsg(`Uploading ${kind}…`)
@@ -136,28 +149,212 @@ export default function ManageProjects() {
     setMsg(`Matched ${n} units to layouts ✓`)
   }
 
+  // ── NEW: Update developer logo + cascade to all their projects ──
+  const saveDeveloperLogo = async (file) => {
+    if (!file || !editDev) return
+    setDevSaving(true)
+    setDevEditMsg('Uploading logo…')
+    try {
+      // Upload to storage
+      const path = `developers/${editDev.id}/logo-${Date.now()}-${file.name}`
+      const url = await uploadAsset(file, path)
+
+      // Update developers table
+      const { error: devErr } = await supabase
+        .from('developers')
+        .update({ logo_url: url })
+        .eq('id', editDev.id)
+      if (devErr) throw devErr
+
+      // Update ALL projects of this developer (cascade)
+      const { error: projErr } = await supabase
+        .from('projects')
+        .update({ logo_url: url })
+        .eq('developer_id', editDev.id)
+      if (projErr) throw projErr
+
+      setDevEditMsg('Logo applied to developer and all projects ✓')
+      await load()
+      // Update preview locally
+      setEditDev((d) => ({ ...d, logo_url: url }))
+
+      // If the currently-edited project belongs to this dev, refresh its form too
+      if (selected && selected.developer_id === editDev.id) {
+        setForm((f) => ({ ...f, logo_url: url }))
+      }
+    } catch (e) {
+      setDevEditMsg('Error: ' + e.message)
+    } finally {
+      setDevSaving(false)
+    }
+  }
+
+  const saveDeveloperName = async (newName) => {
+    if (!editDev || !newName.trim()) return
+    setDevSaving(true)
+    setDevEditMsg('Renaming…')
+    try {
+      const trimmed = newName.trim()
+      const { error: devErr } = await supabase
+        .from('developers')
+        .update({ name: trimmed })
+        .eq('id', editDev.id)
+      if (devErr) throw devErr
+
+      // Cascade to projects (developer_name is denormalized)
+      const { error: projErr } = await supabase
+        .from('projects')
+        .update({ developer_name: trimmed })
+        .eq('developer_id', editDev.id)
+      if (projErr) throw projErr
+
+      setDevEditMsg('Renamed ✓ (applied to all projects)')
+      await load()
+      setEditDev((d) => ({ ...d, name: trimmed }))
+      if (selected && selected.developer_id === editDev.id) {
+        setForm((f) => ({ ...f, developer_name: trimmed }))
+      }
+    } catch (e) {
+      setDevEditMsg('Error: ' + e.message)
+    } finally {
+      setDevSaving(false)
+    }
+  }
+
+  // ── Derived: filtered project list ──
+  const filteredProjects = useMemo(() => {
+    if (!devFilterId) return projects
+    return projects.filter((p) => p.developer_id === devFilterId)
+  }, [projects, devFilterId])
+
+  const filteredDevsForDropdown = useMemo(() => {
+    if (!devSearch) return developers
+    return developers.filter((d) =>
+      d.name.toLowerCase().includes(devSearch.toLowerCase())
+    )
+  }, [developers, devSearch])
+
+  const activeDev = useMemo(() => {
+    return developers.find((d) => d.id === devFilterId) || null
+  }, [developers, devFilterId])
+
   return (
     <div className="flex h-full">
       {/* Project list */}
-      <div className="w-64 border-r border-line overflow-y-auto p-3 shrink-0">
-        <p className="text-xs text-ink-faint mb-2 px-1">{projects.length} projects</p>
-        {projects.map((p) => (
+      <div className="w-72 border-r border-line overflow-y-auto p-3 shrink-0">
+        {/* NEW: Developer filter */}
+        <div className="mb-3 relative">
+          <label className="text-[10px] font-semibold text-ink-faint uppercase tracking-wide block mb-1.5 px-1">
+            Filter by Developer
+          </label>
           <button
-            key={p.id}
-            onClick={() => pick(p)}
-            className={`w-full text-left px-3 py-2 rounded-lg text-sm mb-1 transition-colors ${
-              selected?.id === p.id ? 'bg-covo-gold text-black font-semibold' : 'text-ink-muted hover:bg-bg-hover'
-            }`}
+            onClick={() => setDevDropdownOpen((o) => !o)}
+            className="w-full flex items-center justify-between bg-bg-card border border-line rounded-md px-3 py-2 text-xs text-ink hover:border-covo-gold/40"
           >
-            {p.name}
+            <span className="flex items-center gap-2 truncate">
+              {activeDev ? (
+                <>
+                  <DevLogoMini name={activeDev.name} url={activeDev.logo_url} />
+                  <span className="truncate">{activeDev.name}</span>
+                </>
+              ) : (
+                <span className="text-ink-muted">— All developers —</span>
+              )}
+            </span>
+            <ChevronDown className={`w-3.5 h-3.5 text-ink-faint transition-transform ${devDropdownOpen ? 'rotate-180' : ''}`} />
           </button>
-        ))}
+
+          {devDropdownOpen && (
+            <div className="absolute z-20 top-full mt-1 left-0 right-0 bg-bg-card border border-line rounded-md shadow-2xl max-h-80 flex flex-col">
+              <input
+                type="text"
+                value={devSearch}
+                onChange={(e) => setDevSearch(e.target.value)}
+                placeholder="Search developer..."
+                autoFocus
+                className="bg-bg-base border-b border-line px-3 py-2 text-xs text-ink placeholder:text-ink-faint focus:outline-none"
+              />
+              <div className="overflow-y-auto flex-1">
+                <button
+                  onClick={() => { setDevFilterId(''); setDevDropdownOpen(false); setDevSearch('') }}
+                  className={`w-full text-left px-3 py-2 text-xs hover:bg-bg-hover ${!devFilterId ? 'text-covo-gold font-semibold' : 'text-ink-muted'}`}
+                >
+                  — All developers ({developers.length}) —
+                </button>
+                {filteredDevsForDropdown.map((d) => {
+                  const count = projects.filter((p) => p.developer_id === d.id).length
+                  return (
+                    <button
+                      key={d.id}
+                      onClick={() => { setDevFilterId(d.id); setDevDropdownOpen(false); setDevSearch('') }}
+                      className={`w-full flex items-center justify-between gap-2 px-3 py-2 text-xs hover:bg-bg-hover ${devFilterId === d.id ? 'text-covo-gold font-semibold' : 'text-ink'}`}
+                    >
+                      <span className="flex items-center gap-2 truncate">
+                        <DevLogoMini name={d.name} url={d.logo_url} />
+                        <span className="truncate">{d.name}</span>
+                      </span>
+                      <span className="text-[10px] text-ink-faint shrink-0">{count}</span>
+                    </button>
+                  )
+                })}
+                {filteredDevsForDropdown.length === 0 && (
+                  <p className="text-center text-xs text-ink-faint py-4">No match</p>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* NEW: Edit developer button when filter is active */}
+        {activeDev && (
+          <button
+            onClick={() => { setEditDev(activeDev); setDevEditMsg('') }}
+            className="w-full flex items-center justify-center gap-1.5 text-[11px] font-semibold bg-covo-gold/10 text-covo-gold border border-covo-gold/30 rounded-md py-1.5 mb-3 hover:bg-covo-gold/20"
+          >
+            <ImageIcon className="w-3 h-3" />
+            Edit Developer (logo / name)
+          </button>
+        )}
+
+        <p className="text-[10px] text-ink-faint mb-2 px-1 uppercase tracking-wide">
+          {filteredProjects.length} {filteredProjects.length === 1 ? 'project' : 'projects'}
+        </p>
+
+        {filteredProjects.length === 0 ? (
+          <p className="text-xs text-ink-faint text-center py-6">No projects match this filter</p>
+        ) : (
+          filteredProjects.map((p) => (
+            <button
+              key={p.id}
+              onClick={() => pick(p)}
+              className={`w-full text-left px-3 py-2 rounded-md text-xs mb-1 transition-colors ${
+                selected?.id === p.id ? 'bg-covo-gold text-black font-semibold' : 'text-ink-muted hover:bg-bg-hover'
+              }`}
+            >
+              <p className="truncate">{p.name}</p>
+              {p.developer_name && !activeDev && (
+                <p className={`text-[10px] truncate ${selected?.id === p.id ? 'text-black/60' : 'text-ink-faint'}`}>
+                  {p.developer_name}
+                </p>
+              )}
+            </button>
+          ))
+        )}
       </div>
 
       {/* Editor */}
       <div className="flex-1 overflow-y-auto p-6">
         {!selected ? (
-          <p className="text-ink-faint text-sm">Select a project to edit.</p>
+          <div className="flex items-center justify-center h-full text-center">
+            <div>
+              <p className="text-ink-faint text-sm mb-2">Select a project to edit.</p>
+              {activeDev && (
+                <p className="text-[11px] text-ink-faint">
+                  Showing {filteredProjects.length} projects from <span className="text-covo-gold">{activeDev.name}</span>
+                </p>
+              )}
+            </div>
+          </div>
         ) : (
           <div className="max-w-2xl">
             <div className="flex items-center justify-between mb-4">
@@ -267,6 +464,143 @@ export default function ManageProjects() {
             </div>
           </div>
         )}
+      </div>
+
+      {/* ── Edit Developer modal ── */}
+      {editDev && (
+        <EditDeveloperModal
+          dev={editDev}
+          onClose={() => setEditDev(null)}
+          onUploadLogo={saveDeveloperLogo}
+          onRename={saveDeveloperName}
+          saving={devSaving}
+          msg={devEditMsg}
+          projectCount={projects.filter((p) => p.developer_id === editDev.id).length}
+        />
+      )}
+    </div>
+  )
+}
+
+// ─── Mini logo (for dropdown rows) ─────────────────────
+function DevLogoMini({ name, url }) {
+  const [failed, setFailed] = useState(false)
+  const initial = (name || '?').trim().charAt(0).toUpperCase()
+  if (url && !failed) {
+    return (
+      <span className="w-5 h-5 rounded-full bg-white border border-line flex items-center justify-center overflow-hidden shrink-0">
+        <img src={url} alt="" onError={() => setFailed(true)} className="w-full h-full object-contain p-[1px]" />
+      </span>
+    )
+  }
+  return (
+    <span className="w-5 h-5 rounded-full bg-white border border-line flex items-center justify-center text-covo-gold font-bold text-[9px] shrink-0">
+      {initial}
+    </span>
+  )
+}
+
+// ─── Edit Developer Modal ─────────────────────────────
+function EditDeveloperModal({ dev, onClose, onUploadLogo, onRename, saving, msg, projectCount }) {
+  const [name, setName] = useState(dev.name || '')
+  const [file, setFile] = useState(null)
+
+  return (
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div className="bg-bg-card border border-line rounded-lg shadow-2xl w-full max-w-md">
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-line">
+          <div>
+            <h2 className="text-sm font-bold text-ink">Edit Developer</h2>
+            <p className="text-[11px] text-ink-faint mt-0.5">
+              Changes will apply to all {projectCount} {projectCount === 1 ? 'project' : 'projects'}
+            </p>
+          </div>
+          <button onClick={onClose} className="text-ink-faint hover:text-ink">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="px-5 py-4 space-y-4">
+          {/* Current logo preview */}
+          <div className="flex items-center gap-3 p-3 bg-bg-base border border-line rounded-md">
+            <div className="w-14 h-14 rounded-full bg-white border border-line flex items-center justify-center overflow-hidden shrink-0">
+              {dev.logo_url ? (
+                <img src={dev.logo_url} alt="" className="w-full h-full object-contain p-1" />
+              ) : (
+                <span className="text-covo-gold font-bold text-lg">
+                  {(dev.name || '?').charAt(0).toUpperCase()}
+                </span>
+              )}
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm text-ink font-semibold truncate">{dev.name}</p>
+              <p className="text-[10px] text-ink-faint">{dev.logo_url ? 'Current logo' : 'No logo'}</p>
+            </div>
+          </div>
+
+          {/* Rename */}
+          <div>
+            <label className="block text-[11px] font-semibold text-ink-muted mb-1.5">Developer Name</label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Developer name"
+                className="flex-1 bg-bg-base border border-line rounded-md px-3 py-2 text-xs text-ink placeholder:text-ink-faint focus:outline-none focus:border-covo-gold/60"
+              />
+              <button
+                onClick={() => onRename(name)}
+                disabled={saving || !name.trim() || name.trim() === dev.name}
+                className="bg-covo-gold hover:opacity-90 disabled:opacity-30 text-black text-xs font-semibold px-3 rounded-md"
+              >
+                Rename
+              </button>
+            </div>
+          </div>
+
+          {/* Upload logo */}
+          <div>
+            <label className="block text-[11px] font-semibold text-ink-muted mb-1.5">
+              Upload New Logo (image)
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) => setFile(e.target.files?.[0] || null)}
+                className="flex-1 text-[10px] text-ink-muted file:mr-2 file:py-1.5 file:px-3 file:rounded file:border-0 file:bg-bg-base file:text-ink file:text-[10px] file:cursor-pointer"
+              />
+              <button
+                onClick={() => { onUploadLogo(file); setFile(null) }}
+                disabled={saving || !file}
+                className="bg-covo-gold hover:opacity-90 disabled:opacity-30 text-black text-xs font-semibold px-3 rounded-md flex items-center gap-1"
+              >
+                {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
+                Apply
+              </button>
+            </div>
+            <p className="text-[10px] text-ink-faint mt-1">
+              PNG/JPG/SVG · Will update {projectCount} {projectCount === 1 ? 'project' : 'projects'}
+            </p>
+          </div>
+
+          {/* Status message */}
+          {msg && (
+            <p className={`text-xs ${msg.startsWith('Error') ? 'text-covo-pink' : 'text-covo-teal'}`}>
+              {msg}
+            </p>
+          )}
+        </div>
+
+        <div className="px-5 py-3 border-t border-line flex justify-end">
+          <button
+            onClick={onClose}
+            className="bg-bg-base border border-line text-ink-muted text-xs font-semibold px-4 py-2 rounded-md hover:text-ink"
+          >
+            Close
+          </button>
+        </div>
       </div>
     </div>
   )
