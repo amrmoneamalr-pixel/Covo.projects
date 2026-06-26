@@ -1,217 +1,307 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { supabase } from "../../lib/supabase";
+import { Search, Plus, ChevronDown, X, Loader2 } from "lucide-react";
+
+// ─── Helpers ────────────────────────────────────────────────
+function getCategories(raw) {
+  if (!raw) return ["residential"];
+  const t = raw.toLowerCase();
+  const cats = [];
+  if (t.includes("residential") || t.includes("coastal")) cats.push("residential");
+  if (t.includes("commercial") || t.includes("admin") || t.includes("medical")) cats.push("commercial");
+  if (t === "mixed") return ["residential", "commercial"];
+  return cats.length ? cats : ["residential"];
+}
+
+function typeLabel(raw) {
+  const cats = getCategories(raw);
+  if (cats.length === 2) return "Res & Com";
+  if (cats[0] === "commercial") return "Commercial";
+  return "Residential";
+}
+
+function typeBadgeClass(raw) {
+  const cats = getCategories(raw);
+  if (cats.length === 2) return "bg-purple-500/10 text-purple-400 border-purple-500/20";
+  if (cats[0] === "commercial") return "bg-orange-500/10 text-orange-400 border-orange-500/20";
+  return "bg-covo-teal/10 text-covo-teal border-covo-teal/20";
+}
+
+// ─── Logo component ─────────────────────────────────────────
+function DevLogo({ name, url, size = 36 }) {
+  const [failed, setFailed] = useState(false);
+  const initial = (name || "?").trim().charAt(0).toUpperCase();
+  const showImg = url && !failed;
+  return (
+    <div
+      style={{ width: size, height: size }}
+      className="shrink-0 rounded-full bg-white border border-line flex items-center justify-center overflow-hidden"
+    >
+      {showImg ? (
+        <img
+          src={url}
+          alt=""
+          onError={() => setFailed(true)}
+          className="w-full h-full object-contain p-1"
+          loading="lazy"
+        />
+      ) : (
+        <span className="text-covo-gold font-bold" style={{ fontSize: size * 0.4 }}>
+          {initial}
+        </span>
+      )}
+    </div>
+  );
+}
 
 export default function Developers() {
   const [developers, setDevelopers] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [expandedDev, setExpandedDev] = useState(null);
+  const [error, setError] = useState(null);
+
   const [search, setSearch] = useState("");
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [expanded, setExpanded] = useState(null);
 
-  // Modals
+  // Add developer
   const [showAddDev, setShowAddDev] = useState(false);
-  const [showAddProject, setShowAddProject] = useState(false);
-  const [selectedDevId, setSelectedDevId] = useState(null);
+  const [newDev, setNewDev] = useState({ name: "", logo_url: "" });
+  const [savingDev, setSavingDev] = useState(false);
 
-  // Forms
-  const [newDevName, setNewDevName] = useState("");
-  const [newDevNameEn, setNewDevNameEn] = useState("");
-  const [newProject, setNewProject] = useState({
-    name: "",
-    name_en: "",
-    city: "",
-    type: "Residential",
-    min_price: "",
-    delivery_from: "",
-  });
+  // Add project
+  const [showAddProj, setShowAddProj] = useState(false);
+  const [targetDev, setTargetDev] = useState(null);
+  const [newProj, setNewProj] = useState({ name: "", city: "", type: "Residential" });
+  const [savingProj, setSavingProj] = useState(false);
 
-  const [saving, setSaving] = useState(false);
-  const [msg, setMsg] = useState(null);
-
-  useEffect(() => {
-    fetchDevelopers();
-  }, []);
-
-  async function fetchDevelopers() {
+  async function fetchData() {
     setLoading(true);
-    const { data, error } = await supabase
-      .from("developers")
-      .select(`id, name, name_en, projects(id, name, name_en, city, dominant_type, min_price, delivery_from)`)
-      .order("name");
-    if (!error) setDevelopers(data || []);
-    setLoading(false);
-  }
+    setError(null);
+    try {
+      const { data: devs, error: devErr } = await supabase
+        .from("developers")
+        .select("id, name, logo_url")
+        .order("name");
+      if (devErr) throw devErr;
 
-  const filtered = developers.filter((d) =>
-    d.name?.toLowerCase().includes(search.toLowerCase()) ||
-    d.name_en?.toLowerCase().includes(search.toLowerCase())
-  );
+      const { data: projs, error: projErr } = await supabase
+        .from("projects")
+        .select("id, name, city, dominant_type, developer_id, developer_name")
+        .order("name");
+      if (projErr) throw projErr;
 
-  async function handleAddDeveloper() {
-    if (!newDevName.trim()) return;
-    setSaving(true);
-    const { error } = await supabase
-      .from("developers")
-      .insert({ name: newDevName.trim(), name_en: newDevNameEn.trim() });
-    setSaving(false);
-    if (error) {
-      setMsg({ type: "error", text: "حصل خطأ: " + error.message });
-    } else {
-      setMsg({ type: "success", text: "تم إضافة المطور بنجاح ✅" });
-      setNewDevName("");
-      setNewDevNameEn("");
-      setShowAddDev(false);
-      fetchDevelopers();
+      const projectsByDev = {};
+      for (const p of projs || []) {
+        const key = p.developer_id;
+        if (!projectsByDev[key]) projectsByDev[key] = [];
+        projectsByDev[key].push(p);
+      }
+
+      setDevelopers(
+        (devs || []).map((d) => ({ ...d, projects: projectsByDev[d.id] || [] }))
+      );
+    } catch (e) {
+      console.error(e);
+      setError(e.message || "Failed to load");
+    } finally {
+      setLoading(false);
     }
-    setTimeout(() => setMsg(null), 3000);
   }
 
-  async function handleAddProject() {
-    if (!newProject.name.trim() || !selectedDevId) return;
-    setSaving(true);
-    const { error } = await supabase.from("projects").insert({
-      name: newProject.name.trim(),
-      name_en: newProject.name_en.trim(),
-      city: newProject.city.trim(),
-      dominant_type: newProject.type,
-      min_price: newProject.min_price ? Number(newProject.min_price) : null,
-      delivery_from: newProject.delivery_from || null,
-      developer_id: selectedDevId,
+  useEffect(() => { fetchData(); }, []);
+
+  const filtered = useMemo(() => {
+    return developers.filter((dev) => {
+      const matchSearch = !search || dev.name.toLowerCase().includes(search.toLowerCase());
+      if (!matchSearch) return false;
+      if (typeFilter === "all") return true;
+      return dev.projects.some((p) => getCategories(p.dominant_type).includes(typeFilter));
     });
-    setSaving(false);
-    if (error) {
-      setMsg({ type: "error", text: "حصل خطأ: " + error.message });
-    } else {
-      setMsg({ type: "success", text: "تم إضافة المشروع بنجاح ✅" });
-      setNewProject({ name: "", name_en: "", city: "", type: "Residential", min_price: "", delivery_from: "" });
-      setShowAddProject(false);
-      fetchDevelopers();
+  }, [developers, search, typeFilter]);
+
+  const totalProjects = filtered.reduce((s, d) => s + d.projects.length, 0);
+
+  async function handleAddDev() {
+    if (!newDev.name.trim()) return;
+    setSavingDev(true);
+    try {
+      const { error: e } = await supabase.from("developers").insert({
+        name: newDev.name.trim(),
+        logo_url: newDev.logo_url.trim() || null,
+      });
+      if (e) throw e;
+      setNewDev({ name: "", logo_url: "" });
+      setShowAddDev(false);
+      await fetchData();
+    } catch (e) {
+      alert("Error: " + e.message);
+    } finally {
+      setSavingDev(false);
     }
-    setTimeout(() => setMsg(null), 3000);
   }
 
-  function openAddProject(devId) {
-    setSelectedDevId(devId);
-    setShowAddProject(true);
+  function openAddProject(dev) {
+    setTargetDev(dev);
+    setShowAddProj(true);
   }
 
-  const devName = developers.find((d) => d.id === selectedDevId)?.name;
+  async function handleAddProj() {
+    if (!newProj.name.trim() || !targetDev) return;
+    setSavingProj(true);
+    try {
+      const cats = getCategories(newProj.type);
+      const { error: e } = await supabase.from("projects").insert({
+        name: newProj.name.trim(),
+        city: newProj.city.trim() || null,
+        developer_id: targetDev.id,
+        developer_name: targetDev.name,
+        dominant_type: cats.length === 2 ? "mixed" : cats[0],
+        is_residential: cats.includes("residential"),
+        is_commercial: cats.includes("commercial"),
+        logo_url: targetDev.logo_url || null,
+      });
+      if (e) throw e;
+      setNewProj({ name: "", city: "", type: "Residential" });
+      setShowAddProj(false);
+      await fetchData();
+    } catch (e) {
+      alert("Error: " + e.message);
+    } finally {
+      setSavingProj(false);
+    }
+  }
+
+  const TYPE_FILTERS = [
+    { id: "all", label: "All" },
+    { id: "residential", label: "Residential" },
+    { id: "commercial", label: "Commercial" },
+  ];
 
   return (
-    <div className="p-6 max-w-4xl mx-auto" dir="rtl">
+    <div className="p-6 max-w-4xl mx-auto">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">المطورين</h1>
-          <p className="text-sm text-gray-500 mt-1">{developers.length} مطور • {developers.reduce((s, d) => s + (d.projects?.length || 0), 0)} مشروع</p>
+          <h1 className="text-xl font-bold text-ink">Developers</h1>
+          <p className="text-xs text-ink-faint mt-1">
+            {loading ? "Loading…" : `${filtered.length} developers · ${totalProjects} projects`}
+          </p>
         </div>
         <button
           onClick={() => setShowAddDev(true)}
-          className="flex items-center gap-2 bg-[#B8860B] hover:bg-[#9a7009] text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+          className="flex items-center gap-1.5 bg-covo-gold hover:opacity-90 text-black px-3.5 py-2 rounded-md text-xs font-semibold transition-opacity"
         >
-          <span className="text-lg leading-none">+</span>
-          إضافة مطور
+          <Plus className="w-3.5 h-3.5" />
+          Add Developer
         </button>
       </div>
 
-      {/* Toast */}
-      {msg && (
-        <div className={`mb-4 px-4 py-3 rounded-lg text-sm font-medium ${msg.type === "success" ? "bg-green-50 text-green-700 border border-green-200" : "bg-red-50 text-red-700 border border-red-200"}`}>
-          {msg.text}
+      {/* Search + filter */}
+      <div className="flex gap-3 mb-4 flex-wrap">
+        <div className="relative flex-1 min-w-48">
+          <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search developers..."
+            className="w-full bg-bg-base border border-line rounded-md pl-9 pr-3 py-2 text-xs text-ink placeholder:text-ink-faint focus:outline-none focus:border-covo-gold/60"
+          />
         </div>
-      )}
-
-      {/* Search */}
-      <div className="relative mb-4">
-        <input
-          type="text"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="ابحث عن مطور..."
-          className="w-full border border-gray-200 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#B8860B]/30 focus:border-[#B8860B] pr-10"
-        />
-        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-base">🔍</span>
+        <div className="flex gap-1.5">
+          {TYPE_FILTERS.map((f) => (
+            <button
+              key={f.id}
+              onClick={() => setTypeFilter(f.id)}
+              className={`px-3 py-2 rounded-md text-xs font-semibold border transition-colors ${
+                typeFilter === f.id
+                  ? "bg-covo-gold text-black border-covo-gold"
+                  : "bg-bg-base text-ink-muted border-line hover:text-ink"
+              }`}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* List */}
       {loading ? (
-        <div className="text-center py-16 text-gray-400">جاري التحميل...</div>
-      ) : filtered.length === 0 ? (
-        <div className="text-center py-16 text-gray-400">
-          {search ? "مفيش نتائج للبحث ده" : "مفيش مطورين لحد دلوقتي"}
+        <div className="flex items-center justify-center py-20 text-ink-faint text-sm">
+          <Loader2 className="w-5 h-5 animate-spin mr-2" />
+          Loading from database…
         </div>
+      ) : error ? (
+        <div className="text-center py-20">
+          <p className="text-covo-pink text-sm mb-2">Failed to load: {error}</p>
+          <button onClick={fetchData} className="text-xs text-covo-gold underline">
+            Try again
+          </button>
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="text-center py-20 text-ink-faint text-sm">No results</div>
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-2">
           {filtered.map((dev) => {
-            const isOpen = expandedDev === dev.id;
-            const projectCount = dev.projects?.length || 0;
+            const isOpen = expanded === dev.id;
+            const visibleProjects =
+              typeFilter === "all"
+                ? dev.projects
+                : dev.projects.filter((p) => getCategories(p.dominant_type).includes(typeFilter));
+            const resCount = dev.projects.filter((p) => getCategories(p.dominant_type).includes("residential")).length;
+            const comCount = dev.projects.filter((p) => getCategories(p.dominant_type).includes("commercial")).length;
+
             return (
-              <div key={dev.id} className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
-                {/* Developer Row */}
+              <div key={dev.id} className="bg-bg-card border border-line rounded-lg overflow-hidden">
                 <div
-                  className="flex items-center justify-between px-5 py-4 cursor-pointer hover:bg-gray-50 transition-colors"
-                  onClick={() => setExpandedDev(isOpen ? null : dev.id)}
+                  className="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-bg-hover transition-colors"
+                  onClick={() => setExpanded(isOpen ? null : dev.id)}
                 >
-                  <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-full bg-[#B8860B]/10 flex items-center justify-center text-[#B8860B] font-bold text-sm">
-                      {dev.name?.charAt(0) || "?"}
-                    </div>
-                    <div>
-                      <p className="font-semibold text-gray-900 text-sm">{dev.name}</p>
-                      {dev.name_en && <p className="text-xs text-gray-400">{dev.name_en}</p>}
-                    </div>
+                  <div className="flex items-center gap-3 min-w-0">
+                    <DevLogo name={dev.name} url={dev.logo_url} size={36} />
+                    <p className="text-sm font-semibold text-ink truncate">{dev.name}</p>
                   </div>
-                  <div className="flex items-center gap-3">
-                    <span className="text-xs bg-gray-100 text-gray-600 px-2.5 py-1 rounded-full">
-                      {projectCount} {projectCount === 1 ? "مشروع" : "مشاريع"}
-                    </span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {resCount > 0 && (
+                      <span className="text-[10px] bg-covo-teal/10 text-covo-teal border border-covo-teal/20 px-2 py-0.5 rounded-full font-semibold">
+                        {resCount} Res
+                      </span>
+                    )}
+                    {comCount > 0 && (
+                      <span className="text-[10px] bg-orange-500/10 text-orange-400 border border-orange-500/20 px-2 py-0.5 rounded-full font-semibold">
+                        {comCount} Com
+                      </span>
+                    )}
                     <button
-                      onClick={(e) => { e.stopPropagation(); openAddProject(dev.id); }}
-                      className="text-xs bg-[#B8860B]/10 hover:bg-[#B8860B]/20 text-[#B8860B] px-3 py-1.5 rounded-lg transition-colors font-medium"
+                      onClick={(e) => { e.stopPropagation(); openAddProject(dev); }}
+                      className="text-[10px] bg-bg-base hover:bg-covo-gold/10 hover:text-covo-gold text-ink-muted border border-line px-2.5 py-1 rounded transition-colors font-semibold"
                     >
-                      + مشروع
+                      + Project
                     </button>
-                    <span className={`text-gray-400 transition-transform duration-200 ${isOpen ? "rotate-180" : ""}`}>▾</span>
+                    <ChevronDown className={`w-4 h-4 text-ink-faint transition-transform ${isOpen ? "rotate-180" : ""}`} />
                   </div>
                 </div>
 
-                {/* Projects */}
                 {isOpen && (
-                  <div className="border-t border-gray-100 bg-gray-50/50">
-                    {projectCount === 0 ? (
-                      <div className="px-5 py-4 text-sm text-gray-400 text-center">
-                        مفيش مشاريع لحد دلوقتي —{" "}
-                        <button onClick={() => openAddProject(dev.id)} className="text-[#B8860B] underline">
-                          أضف مشروع
-                        </button>
-                      </div>
+                  <div className="border-t border-line bg-bg-base/40">
+                    {visibleProjects.length === 0 ? (
+                      <p className="text-center text-xs text-ink-faint py-4">
+                        No projects in this category
+                      </p>
                     ) : (
-                      <div className="divide-y divide-gray-100">
-                        {dev.projects.map((proj) => (
-                          <div key={proj.id} className="flex items-center justify-between px-5 py-3">
-                            <div className="flex items-center gap-3">
-                              <div className="w-2 h-2 rounded-full bg-[#B8860B]/40 mt-0.5" />
-                              <div>
-                                <p className="text-sm font-medium text-gray-800">{proj.name}</p>
-                                {proj.city && <p className="text-xs text-gray-400">{proj.city}</p>}
+                      <div className="divide-y divide-line/40">
+                        {visibleProjects.map((proj) => (
+                          <div key={proj.id} className="flex items-center justify-between px-4 py-2.5 hover:bg-bg-hover/40">
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <div className="w-1.5 h-1.5 rounded-full bg-covo-gold/40 shrink-0" />
+                              <div className="min-w-0">
+                                <p className="text-xs text-ink font-medium truncate">{proj.name}</p>
+                                {proj.city && <p className="text-[10px] text-ink-faint">{proj.city}</p>}
                               </div>
                             </div>
-                            <div className="flex items-center gap-3 text-xs text-gray-500">
-                              {proj.dominant_type && (
-                                <span className={`px-2 py-0.5 rounded-full text-xs ${
-                                  proj.dominant_type === "Residential" ? "bg-blue-50 text-blue-600" :
-                                  proj.dominant_type === "Commercial" ? "bg-orange-50 text-orange-600" :
-                                  "bg-purple-50 text-purple-600"
-                                }`}>
-                                  {proj.dominant_type === "Residential" ? "سكني" :
-                                   proj.dominant_type === "Commercial" ? "تجاري" : "مختلط"}
-                                </span>
-                              )}
-                              {proj.min_price && (
-                                <span className="text-gray-400">
-                                  من {(proj.min_price / 1_000_000).toFixed(1)}M
-                                </span>
-                              )}
-                            </div>
+                            <span className={`text-[10px] px-2 py-0.5 rounded-full border font-semibold ${typeBadgeClass(proj.dominant_type)}`}>
+                              {typeLabel(proj.dominant_type)}
+                            </span>
                           </div>
                         ))}
                       </div>
@@ -224,146 +314,132 @@ export default function Developers() {
         </div>
       )}
 
-      {/* ===== Modal: Add Developer ===== */}
       {showAddDev && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md" dir="rtl">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-              <h2 className="text-lg font-bold text-gray-900">إضافة مطور جديد</h2>
-              <button onClick={() => setShowAddDev(false)} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
-            </div>
-            <div className="px-6 py-5 space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">اسم المطور (عربي) *</label>
-                <input
-                  type="text"
-                  value={newDevName}
-                  onChange={(e) => setNewDevName(e.target.value)}
-                  placeholder="مثال: شركة سيتي إيدج"
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#B8860B]/30 focus:border-[#B8860B]"
-                />
+        <Modal title="Add New Developer" onClose={() => setShowAddDev(false)}>
+          <div className="space-y-3">
+            <Field label="Developer Name *">
+              <input
+                type="text"
+                value={newDev.name}
+                onChange={(e) => setNewDev({ ...newDev, name: e.target.value })}
+                onKeyDown={(e) => e.key === "Enter" && handleAddDev()}
+                placeholder="e.g. City Edge"
+                autoFocus
+                className="w-full bg-bg-base border border-line rounded-md px-3 py-2 text-xs text-ink placeholder:text-ink-faint focus:outline-none focus:border-covo-gold/60"
+              />
+            </Field>
+            <Field label="Logo URL (optional)">
+              <input
+                type="text"
+                value={newDev.logo_url}
+                onChange={(e) => setNewDev({ ...newDev, logo_url: e.target.value })}
+                placeholder="/logos/CityEdge.png"
+                className="w-full bg-bg-base border border-line rounded-md px-3 py-2 text-[11px] text-ink placeholder:text-ink-faint focus:outline-none focus:border-covo-gold/60"
+              />
+              <p className="text-[10px] text-ink-faint mt-1">Path like /logos/Name.png or a full URL</p>
+            </Field>
+            {newDev.name && (
+              <div className="flex items-center gap-3 p-3 bg-bg-base border border-line rounded-md">
+                <DevLogo name={newDev.name} url={newDev.logo_url} size={36} />
+                <span className="text-sm text-ink">{newDev.name}</span>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">اسم المطور (إنجليزي)</label>
-                <input
-                  type="text"
-                  value={newDevNameEn}
-                  onChange={(e) => setNewDevNameEn(e.target.value)}
-                  placeholder="مثال: City Edge"
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#B8860B]/30 focus:border-[#B8860B]"
-                  dir="ltr"
-                />
-              </div>
-            </div>
-            <div className="flex gap-3 px-6 py-4 border-t border-gray-100">
-              <button
-                onClick={handleAddDeveloper}
-                disabled={saving || !newDevName.trim()}
-                className="flex-1 bg-[#B8860B] hover:bg-[#9a7009] disabled:opacity-50 text-white py-2.5 rounded-lg text-sm font-medium transition-colors"
-              >
-                {saving ? "جاري الحفظ..." : "حفظ المطور"}
-              </button>
-              <button onClick={() => setShowAddDev(false)} className="flex-1 border border-gray-200 text-gray-700 py-2.5 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">
-                إلغاء
-              </button>
-            </div>
+            )}
           </div>
-        </div>
+          <ModalFooter onCancel={() => setShowAddDev(false)} onSave={handleAddDev} saving={savingDev} disabled={!newDev.name.trim()} />
+        </Modal>
       )}
 
-      {/* ===== Modal: Add Project ===== */}
-      {showAddProject && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md" dir="rtl">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-              <div>
-                <h2 className="text-lg font-bold text-gray-900">إضافة مشروع جديد</h2>
-                {devName && <p className="text-xs text-gray-400 mt-0.5">تحت: {devName}</p>}
-              </div>
-              <button onClick={() => setShowAddProject(false)} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
-            </div>
-            <div className="px-6 py-5 space-y-4 max-h-[60vh] overflow-y-auto">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">اسم المشروع (عربي) *</label>
-                <input
-                  type="text"
-                  value={newProject.name}
-                  onChange={(e) => setNewProject({ ...newProject, name: e.target.value })}
-                  placeholder="مثال: مدينتي"
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#B8860B]/30 focus:border-[#B8860B]"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">اسم المشروع (إنجليزي)</label>
-                <input
-                  type="text"
-                  value={newProject.name_en}
-                  onChange={(e) => setNewProject({ ...newProject, name_en: e.target.value })}
-                  placeholder="مثال: Madinaty"
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#B8860B]/30 focus:border-[#B8860B]"
-                  dir="ltr"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">المدينة</label>
-                <input
-                  type="text"
-                  value={newProject.city}
-                  onChange={(e) => setNewProject({ ...newProject, city: e.target.value })}
-                  placeholder="مثال: القاهرة الجديدة"
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#B8860B]/30 focus:border-[#B8860B]"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">نوع المشروع</label>
-                <select
-                  value={newProject.type}
-                  onChange={(e) => setNewProject({ ...newProject, type: e.target.value })}
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#B8860B]/30 focus:border-[#B8860B] bg-white"
-                >
-                  <option value="Residential">سكني</option>
-                  <option value="Commercial">تجاري</option>
-                  <option value="Mixed">مختلط</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">أدنى سعر (جنيه)</label>
-                <input
-                  type="number"
-                  value={newProject.min_price}
-                  onChange={(e) => setNewProject({ ...newProject, min_price: e.target.value })}
-                  placeholder="مثال: 3500000"
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#B8860B]/30 focus:border-[#B8860B]"
-                  dir="ltr"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">تسليم من (سنة)</label>
-                <input
-                  type="number"
-                  value={newProject.delivery_from}
-                  onChange={(e) => setNewProject({ ...newProject, delivery_from: e.target.value })}
-                  placeholder="مثال: 2026"
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#B8860B]/30 focus:border-[#B8860B]"
-                  dir="ltr"
-                />
-              </div>
-            </div>
-            <div className="flex gap-3 px-6 py-4 border-t border-gray-100">
-              <button
-                onClick={handleAddProject}
-                disabled={saving || !newProject.name.trim()}
-                className="flex-1 bg-[#B8860B] hover:bg-[#9a7009] disabled:opacity-50 text-white py-2.5 rounded-lg text-sm font-medium transition-colors"
+      {showAddProj && targetDev && (
+        <Modal title="Add Project" subtitle={targetDev.name} onClose={() => setShowAddProj(false)}>
+          <div className="space-y-3">
+            <Field label="Project Name *">
+              <input
+                type="text"
+                value={newProj.name}
+                onChange={(e) => setNewProj({ ...newProj, name: e.target.value })}
+                placeholder="e.g. Madinaty"
+                autoFocus
+                className="w-full bg-bg-base border border-line rounded-md px-3 py-2 text-xs text-ink placeholder:text-ink-faint focus:outline-none focus:border-covo-gold/60"
+              />
+            </Field>
+            <Field label="City">
+              <input
+                type="text"
+                value={newProj.city}
+                onChange={(e) => setNewProj({ ...newProj, city: e.target.value })}
+                placeholder="e.g. New Cairo"
+                className="w-full bg-bg-base border border-line rounded-md px-3 py-2 text-xs text-ink placeholder:text-ink-faint focus:outline-none focus:border-covo-gold/60"
+              />
+            </Field>
+            <Field label="Type">
+              <select
+                value={newProj.type}
+                onChange={(e) => setNewProj({ ...newProj, type: e.target.value })}
+                className="w-full bg-bg-base border border-line rounded-md px-3 py-2 text-xs text-ink focus:outline-none focus:border-covo-gold/60"
               >
-                {saving ? "جاري الحفظ..." : "حفظ المشروع"}
-              </button>
-              <button onClick={() => setShowAddProject(false)} className="flex-1 border border-gray-200 text-gray-700 py-2.5 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors">
-                إلغاء
-              </button>
-            </div>
+                <option value="Residential">Residential</option>
+                <option value="Coastal">Coastal</option>
+                <option value="Commercial">Commercial</option>
+                <option value="Administration">Administration</option>
+                <option value="Medical">Medical</option>
+                <option value="Commercial - Administrative">Commercial - Administrative</option>
+                <option value="Commercial - Medical - Administrative">Commercial - Medical - Administrative</option>
+                <option value="Residential - Commercial">Residential - Commercial</option>
+              </select>
+            </Field>
           </div>
-        </div>
+          <ModalFooter onCancel={() => setShowAddProj(false)} onSave={handleAddProj} saving={savingProj} disabled={!newProj.name.trim()} />
+        </Modal>
       )}
+    </div>
+  );
+}
+
+function Modal({ title, subtitle, children, onClose }) {
+  return (
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div className="bg-bg-card border border-line rounded-lg shadow-2xl w-full max-w-sm">
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-line">
+          <div>
+            <h2 className="text-sm font-bold text-ink">{title}</h2>
+            {subtitle && <p className="text-[11px] text-ink-faint mt-0.5">{subtitle}</p>}
+          </div>
+          <button onClick={onClose} className="text-ink-faint hover:text-ink">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="px-5 py-4">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, children }) {
+  return (
+    <div>
+      <label className="block text-[11px] font-semibold text-ink-muted mb-1.5">{label}</label>
+      {children}
+    </div>
+  );
+}
+
+function ModalFooter({ onCancel, onSave, saving, disabled }) {
+  return (
+    <div className="flex gap-2 px-5 py-3 border-t border-line -mx-5 -mb-4 mt-4">
+      <button
+        onClick={onSave}
+        disabled={disabled || saving}
+        className="flex-1 bg-covo-gold hover:opacity-90 disabled:opacity-40 text-black py-2 rounded-md text-xs font-semibold transition-opacity flex items-center justify-center gap-1.5"
+      >
+        {saving && <Loader2 className="w-3 h-3 animate-spin" />}
+        Save
+      </button>
+      <button
+        onClick={onCancel}
+        className="flex-1 bg-bg-base border border-line text-ink-muted py-2 rounded-md text-xs font-semibold hover:text-ink"
+      >
+        Cancel
+      </button>
     </div>
   );
 }
