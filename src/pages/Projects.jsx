@@ -51,20 +51,27 @@ export default function Projects() {
     }
   }, [])
 
-  // Facet lists from loaded data (cities, developers, compounds)
+  // Facet lists from loaded data (cities, developers WITH LOGOS, compounds)
   const facets = useMemo(() => {
     const cities = new Set()
-    const developers = new Set()
+    const developersMap = new Map() // name -> { name, logo_url }
     const compounds = new Set()
     for (const p of projects) {
       if (p.city) cities.add(p.city)
-      if (p.developer_name) developers.add(p.developer_name)
+      if (p.developer_name && !developersMap.has(p.developer_name)) {
+        developersMap.set(p.developer_name, {
+          name: p.developer_name,
+          logo_url: p.logo_url || '',
+        })
+      }
       if (p.area) compounds.add(p.area)
       else if (p.name) compounds.add(p.name) // fall back to project name as compound
     }
     return {
       cities: [...cities].sort(),
-      developers: [...developers].sort(),
+      developers: [...developersMap.values()].sort((a, b) =>
+        a.name.localeCompare(b.name)
+      ),
       compounds: [...compounds].sort(),
     }
   }, [projects])
