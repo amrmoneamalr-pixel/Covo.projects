@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Upload, FileSpreadsheet, MessageSquare, Check, AlertCircle, Loader2, X, Sparkles } from 'lucide-react'
+import { Upload, FileSpreadsheet, MessageSquare, Check, AlertCircle, Loader2, X, Sparkles, SkipForward } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import { parseExcelFile, parseWhatsApp } from '../../utils/parsers'
 
@@ -15,20 +15,13 @@ const FORMAT_LABELS = {
 
 // ─── Fuzzy matching helpers ───────────────────────────
 function normalizeName(name) {
-  return (name || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, '')
-    .trim()
+  return (name || '').toLowerCase().replace(/[^a-z0-9]/g, '').trim()
 }
 
 function similarity(a, b) {
   if (a === b) return 1
   if (!a || !b) return 0
-  if (a.includes(b) || b.includes(a)) {
-    // partial match — give a high but not perfect score
-    return 0.85
-  }
-  // Levenshtein distance
+  if (a.includes(b) || b.includes(a)) return 0.85
   const m = a.length, n = b.length
   const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0))
   for (let i = 0; i <= m; i++) dp[i][0] = i
@@ -47,7 +40,6 @@ function findMatches(parsedName, parsedDev, existing) {
   const devNorm = normalizeName(parsedDev || '')
   const candidates = []
   for (const ex of existing) {
-    // If we know the developer on both sides and they differ, skip
     if (devNorm && ex.developer_name) {
       if (normalizeName(ex.developer_name) !== devNorm) continue
     }
@@ -67,12 +59,11 @@ export default function ImportExcel() {
   const [importing, setImporting] = useState(false)
   const [progress, setProgress] = useState('')
 
-  // NEW: review state
   const [analyzing, setAnalyzing] = useState(false)
-  const [reviewItems, setReviewItems] = useState(null) // [{parsedName, candidates, decision: 'insert'|matchId}]
-  const [exactMatches, setExactMatches] = useState({}) // { parsedName: existingId } for auto-updates
+  const [reviewItems, setReviewItems] = useState(null)
+  const [exactMatches, setExactMatches] = useState({})
+  const [skippedNames, setSkippedNames] = useState([]) // projects with no match → auto skip
 
-  // ---- Excel upload ----
   const handleFile = async (file) => {
     if (!file) return
     setStatus(null)
@@ -80,7 +71,7 @@ export default function ImportExcel() {
     setReviewItems(null)
     try {
       const result = await parseExcelFile(file)
-      if (result.units.length === 0) {
+      if (result.units.length === 0 && !result.isProjectsOnly) {
         setStatus({ type: 'error', msg: 'No units found. Check the file format.' })
         return
       }
@@ -91,7 +82,6 @@ export default function ImportExcel() {
     }
   }
 
-  // ---- WhatsApp parse ----
   const handleWhatsApp = () => {
     setStatus(null)
     setParsed(null)
@@ -108,7 +98,7 @@ export default function ImportExcel() {
     setParsed(result)
   }
 
-  // ---- Analyze: classify every parsed project into exact / fuzzy / no-match ----
+  // ---- Analyze: classify into exact / fuzzy / no-match (skip) ----
   const analyze = async () => {
     if (!parsed) return
     setAnalyzing(true)
@@ -120,36 +110,38 @@ export default function ImportExcel() {
       if (error) throw error
       const pool = existing || []
 
-      const exact = {}      // parsedName -> existingId
-      const review = []     // { parsedName, parsedDev, candidates }
+      const exact = {}
+      const review = []
+      const skipped = []
 
       for (const proj of parsed.projects) {
         const matches = findMatches(proj.name, proj.developer_name, pool)
         if (!matches.length) {
-          // no match, will be inserted as new
+          // NO MATCH → skip (do NOT insert)
+          skipped.push(proj.name)
           continue
         }
-        // Check for an "exact match" after normalization (score 1)
         const perfect = matches.find((m) => m.score === 1)
         if (perfect) {
           exact[proj.name] = perfect.id
         } else {
-          // Fuzzy — needs review. Default decision = "insert" (safer)
+          // Fuzzy — default is the BEST match (so user just clicks Continue)
           review.push({
             parsedName: proj.name,
             parsedDev: proj.developer_name || '',
             candidates: matches,
-            decision: 'insert',
+            decision: matches[0].id, // default: best match (NOT skip)
           })
         }
       }
 
       setExactMatches(exact)
+      setSkippedNames(skipped)
+
       if (review.length > 0) {
         setReviewItems(review)
       } else {
-        // No fuzzy matches → import directly
-        await doImport(exact, {})
+        await doImport(exact, {}, skipped)
       }
     } catch (e) {
       setStatus({ type: 'error', msg: 'Analysis failed: ' + e.message })
@@ -158,106 +150,75 @@ export default function ImportExcel() {
     }
   }
 
-  // Called when user clicks "Continue Import" in the review modal
   const confirmReview = async () => {
     const decisions = {}
+    const reviewSkipped = []
     for (const item of reviewItems || []) {
-      if (item.decision !== 'insert') {
-        decisions[item.parsedName] = item.decision // existing project id
+      if (item.decision === 'skip') {
+        reviewSkipped.push(item.parsedName)
+      } else {
+        decisions[item.parsedName] = item.decision
       }
     }
+    const allSkipped = [...skippedNames, ...reviewSkipped]
     setReviewItems(null)
-    await doImport(exactMatches, decisions)
+    await doImport(exactMatches, decisions, allSkipped)
   }
 
-  // ---- Import to Supabase ----
-  // exactMap: { parsedName: id } – auto-detected exact matches
-  // userMap : { parsedName: id } – user-confirmed fuzzy matches
-  // For any parsed project NOT in either map → INSERT new
-  const doImport = async (exactMap = {}, userMap = {}) => {
+  // ---- Import: ONLY updates existing projects, skips the rest ----
+  const doImport = async (exactMap = {}, userMap = {}, skippedList = []) => {
     if (!parsed) return
     setImporting(true)
     setStatus(null)
-    let projCount = 0
-    let unitCount = 0
     let updatedCount = 0
-    let createdCount = 0
+    let unitCount = 0
+    const skippedSet = new Set(skippedList)
 
     try {
       for (const proj of parsed.projects) {
-        setProgress(`Importing ${proj.name}…`)
+        // Skip if it's in the skip list
+        if (skippedSet.has(proj.name)) {
+          continue
+        }
 
-        // Decide the project id
-        const overrideId = userMap[proj.name] || exactMap[proj.name] || null
+        const targetId = userMap[proj.name] || exactMap[proj.name] || null
+        if (!targetId) {
+          // Defensive: no decision → skip
+          skippedSet.add(proj.name)
+          continue
+        }
 
-        const projectRow = {
-          name: proj.name,
-          developer_name: proj.developer_name || null,
-          type: proj.type || 'residential',
-          city: proj.city || null,
-          status: proj.status || 'available',
-          start_price: proj.start_price ?? null,
-          delivery_years: proj.delivery_years ?? null,
-          delivery_label: proj.delivery_label ?? null,
-          source: parsed.format,
+        setProgress(`Updating ${proj.name}…`)
+
+        // Update existing project metadata (only fields we have)
+        const patch = {
           updated_at: new Date().toISOString(),
         }
-        if (parsed.format === 'developers_master') {
-          projectRow.is_mixed = !!proj.is_mixed
-          projectRow.is_commercial = !!proj.is_commercial
-          projectRow.is_residential = !!proj.is_residential
-          projectRow.is_medical = !!proj.is_medical
-          projectRow.is_administrative = !!proj.is_administrative
-          projectRow.is_coastal = !!proj.is_coastal
-          projectRow.types_raw = proj.types_raw || null
-          delete projectRow.start_price
+        if (proj.city)             patch.city = proj.city
+        if (proj.status)           patch.status = proj.status
+        if (proj.delivery_years != null) patch.delivery_years = proj.delivery_years
+        if (proj.delivery_label)   patch.delivery_label = proj.delivery_label
+        if (proj.start_price != null && parsed.format !== 'developers_master') {
+          patch.start_price = proj.start_price
         }
 
-        let projectId
-        if (overrideId) {
-          // Update existing (matched by user or by exact normalize)
-          projectId = overrideId
-          // Keep the existing project's name? NO — user wants update so use parsed name
-          // Actually, since the user MATCHED it, we keep the existing name to avoid renaming
-          // Use the parsed name only if not in userMap (auto-exact)
-          const keepExistingName = !!userMap[proj.name]
-          if (keepExistingName) delete projectRow.name
-          await supabase.from('projects').update(projectRow).eq('id', projectId)
-          updatedCount++
-        } else {
-          // No match → check by name one more time (safety net)
-          const { data: existing } = await supabase
-            .from('projects')
-            .select('id')
-            .eq('name', proj.name)
-            .maybeSingle()
-          if (existing) {
-            projectId = existing.id
-            await supabase.from('projects').update(projectRow).eq('id', projectId)
-            updatedCount++
-          } else {
-            const { data: ins, error } = await supabase
-              .from('projects')
-              .insert(projectRow)
-              .select('id')
-              .single()
-            if (error) throw error
-            projectId = ins.id
-            createdCount++
-          }
-        }
-        projCount++
+        const { error: updErr } = await supabase
+          .from('projects')
+          .update(patch)
+          .eq('id', targetId)
+        if (updErr) throw updErr
+        updatedCount++
 
-        // 2) Replace units for this project
+        // Replace units for this project (filtered by source_file)
         if (!parsed.isProjectsOnly && proj.units.length > 0) {
           await supabase
             .from('units')
             .delete()
-            .eq('project_id', projectId)
+            .eq('project_id', targetId)
             .eq('source_file', parsed.fileName || parsed.format)
 
           const unitRows = proj.units.map((u) => ({
-            project_id: projectId,
+            project_id: targetId,
             unit_code: u.unit_code || null,
             unit_price: u.unit_price ?? null,
             status: (u.status || 'available').toLowerCase().includes('avail') ? 'available' : 'reserved',
@@ -286,12 +247,12 @@ export default function ImportExcel() {
           }
         }
 
-        // 3) Payment plans
+        // Payment plans
         if (proj.plans?.length) {
-          await supabase.from('payment_plans').delete().eq('project_id', projectId)
+          await supabase.from('payment_plans').delete().eq('project_id', targetId)
           await supabase.from('payment_plans').insert(
             proj.plans.map((p, i) => ({
-              project_id: projectId,
+              project_id: targetId,
               down_payment_pct: p.down_payment_pct ?? null,
               years: p.years ?? null,
               discount_pct: p.discount_pct ?? 0,
@@ -304,12 +265,20 @@ export default function ImportExcel() {
         }
       }
 
-      const summary = parsed.isProjectsOnly
-        ? `${updatedCount} updated · ${createdCount} created (${projCount} projects total)`
-        : `${unitCount} units · ${updatedCount} updated · ${createdCount} created`
-      setStatus({ type: 'success', msg: `Done ✓ — ${summary}` })
+      const skipNote = skippedSet.size > 0
+        ? ` · ${skippedSet.size} skipped (not found)`
+        : ''
+      setStatus({
+        type: 'success',
+        msg: `Done ✓ — ${updatedCount} updated · ${unitCount} units${skipNote}`,
+      })
+      // Show skipped list for transparency
+      if (skippedSet.size > 0) {
+        console.log('Skipped projects (not found in DB):', [...skippedSet])
+      }
       setParsed(null)
       setExactMatches({})
+      setSkippedNames([])
       setWaText('')
     } catch (e) {
       console.error(e)
@@ -321,13 +290,14 @@ export default function ImportExcel() {
   }
 
   const exactCount = Object.keys(exactMatches).length
+  const skipCountAuto = skippedNames.length
 
   return (
     <div className="max-w-4xl mx-auto p-6">
       <h1 className="text-xl font-bold text-ink mb-1">Import Availability</h1>
       <p className="text-sm text-ink-muted mb-6">
-        Upload an Excel sheet or paste a WhatsApp message. Smart name matching will catch
-        similar project names and let you review them before importing.
+        Upload an Excel sheet or paste a WhatsApp message. Only projects that already exist in
+        the database will be updated — new ones will be skipped.
       </p>
 
       {/* Tabs */}
@@ -413,6 +383,9 @@ export default function ImportExcel() {
                 {parsed.projects.length} projects
                 {parsed.isProjectsOnly ? '' : ` · ${parsed.units.length} units`}
               </p>
+              <p className="text-[11px] text-ink-faint mt-1">
+                ℹ New project names will be skipped — only matches are updated
+              </p>
             </div>
             <button
               onClick={analyze}
@@ -421,7 +394,7 @@ export default function ImportExcel() {
             >
               {analyzing || importing ? (
                 <>
-                  <Loader2 className="w-4 h-4 animate-spin" /> {progress || (analyzing ? 'Checking for matches…' : 'Importing…')}
+                  <Loader2 className="w-4 h-4 animate-spin" /> {progress || (analyzing ? 'Checking matches…' : 'Importing…')}
                 </>
               ) : (
                 <>
@@ -489,6 +462,7 @@ export default function ImportExcel() {
         <ReviewModal
           items={reviewItems}
           exactCount={exactCount}
+          skipCountAuto={skipCountAuto}
           totalParsed={parsed?.projects.length || 0}
           onCancel={() => setReviewItems(null)}
           onChange={(idx, decision) => {
@@ -507,10 +481,10 @@ export default function ImportExcel() {
 }
 
 // ─── Review Modal ─────────────────────────────────────
-function ReviewModal({ items, exactCount, totalParsed, onCancel, onChange, onConfirm, importing }) {
-  const newCount = totalParsed - exactCount - items.length
-  const matchedCount = items.filter((it) => it.decision !== 'insert').length
-  const insertCount = items.filter((it) => it.decision === 'insert').length
+function ReviewModal({ items, exactCount, skipCountAuto, totalParsed, onCancel, onChange, onConfirm, importing }) {
+  const matchedCount = items.filter((it) => it.decision !== 'skip').length
+  const skipCountInReview = items.filter((it) => it.decision === 'skip').length
+  const totalSkip = skipCountAuto + skipCountInReview
 
   return (
     <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -522,8 +496,8 @@ function ReviewModal({ items, exactCount, totalParsed, onCancel, onChange, onCon
               Review Similar Names
             </h2>
             <p className="text-[11px] text-ink-faint mt-0.5">
-              Found {items.length} project{items.length === 1 ? '' : 's'} with similar names already in the database.
-              Choose what to do with each.
+              Found {items.length} project{items.length === 1 ? '' : 's'} with similar names.
+              Match them to existing or skip.
             </p>
           </div>
           <button onClick={onCancel} className="text-ink-faint hover:text-ink shrink-0">
@@ -532,19 +506,23 @@ function ReviewModal({ items, exactCount, totalParsed, onCancel, onChange, onCon
         </div>
 
         {/* Summary banner */}
-        <div className="px-5 py-2.5 bg-bg-base border-b border-line shrink-0 flex items-center gap-4 text-[11px]">
+        <div className="px-5 py-2.5 bg-bg-base border-b border-line shrink-0 flex items-center gap-4 text-[11px] flex-wrap">
           <span className="text-covo-teal">
             <Check className="w-3 h-3 inline mr-1" />
-            {exactCount} exact match{exactCount === 1 ? '' : 'es'} (auto-update)
+            {exactCount} exact (auto-update)
           </span>
           <span className="text-ink-faint">·</span>
           <span className="text-covo-gold">
             ⚠ {items.length} need review
           </span>
-          <span className="text-ink-faint">·</span>
-          <span className="text-ink-muted">
-            {newCount} new (will insert)
-          </span>
+          {skipCountAuto > 0 && (
+            <>
+              <span className="text-ink-faint">·</span>
+              <span className="text-ink-muted">
+                {skipCountAuto} not found (will skip)
+              </span>
+            </>
+          )}
         </div>
 
         {/* Review list */}
@@ -594,20 +572,21 @@ function ReviewModal({ items, exactCount, totalParsed, onCancel, onChange, onCon
 
                 <label
                   className={`flex items-center gap-2 px-3 py-2 rounded border cursor-pointer transition-colors ${
-                    item.decision === 'insert'
-                      ? 'border-covo-teal/60 bg-covo-teal/10'
+                    item.decision === 'skip'
+                      ? 'border-ink-muted/40 bg-bg-hover'
                       : 'border-line hover:border-line/80'
                   }`}
                 >
                   <input
                     type="radio"
                     name={`decision-${idx}`}
-                    checked={item.decision === 'insert'}
-                    onChange={() => onChange(idx, 'insert')}
-                    className="accent-covo-teal shrink-0"
+                    checked={item.decision === 'skip'}
+                    onChange={() => onChange(idx, 'skip')}
+                    className="accent-ink-muted shrink-0"
                   />
-                  <p className="text-xs text-ink">
-                    Create as new project <span className="text-ink-faint">(keep separate)</span>
+                  <SkipForward className="w-3 h-3 text-ink-faint" />
+                  <p className="text-xs text-ink-muted">
+                    Skip <span className="text-ink-faint">(don't import this one)</span>
                   </p>
                 </label>
               </div>
@@ -618,8 +597,8 @@ function ReviewModal({ items, exactCount, totalParsed, onCancel, onChange, onCon
         {/* Footer */}
         <div className="px-5 py-3 border-t border-line bg-bg-base/30 flex items-center justify-between shrink-0">
           <p className="text-[11px] text-ink-faint">
-            <span className="text-covo-gold">{matchedCount}</span> will update ·{' '}
-            <span className="text-covo-teal">{insertCount + newCount}</span> will be created
+            <span className="text-covo-gold">{exactCount + matchedCount}</span> will update ·{' '}
+            <span className="text-ink-muted">{totalSkip} skipped</span>
           </p>
           <div className="flex gap-2">
             <button
