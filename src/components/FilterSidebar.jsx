@@ -33,6 +33,39 @@ function Check({ label, checked, onChange }) {
   )
 }
 
+// NEW: Check with logo (for developer list)
+function CheckWithLogo({ name, logoUrl, checked, onChange }) {
+  const initial = (name || '?').trim().charAt(0).toUpperCase()
+  const [imgFailed, setImgFailed] = useState(false)
+  const showImg = logoUrl && !imgFailed
+
+  return (
+    <label className="flex items-center gap-2 text-xs text-ink-muted hover:text-ink cursor-pointer py-0.5">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={onChange}
+        className="accent-covo-gold w-3.5 h-3.5 shrink-0"
+      />
+      {/* Logo circle - fixed size for visual consistency */}
+      <span className="w-5 h-5 rounded-full bg-white border border-line flex items-center justify-center overflow-hidden shrink-0">
+        {showImg ? (
+          <img
+            src={logoUrl}
+            alt=""
+            onError={() => setImgFailed(true)}
+            className="w-full h-full object-contain p-[1px]"
+            loading="lazy"
+          />
+        ) : (
+          <span className="text-covo-gold font-bold text-[9px]">{initial}</span>
+        )}
+      </span>
+      <span className="truncate">{name}</span>
+    </label>
+  )
+}
+
 // Pill-style selector (used for Bedrooms: Studio + 1..9)
 function Pills({ options, isActive, onToggle }) {
   return (
@@ -88,6 +121,12 @@ const BEDROOM_OPTIONS = [
   ...Array.from({ length: 9 }, (_, i) => ({ value: i + 1, label: String(i + 1) })),
 ]
 
+// Normalize a developer entry — accepts either a string or an object {name, logo_url}
+function normalizeDev(d) {
+  if (typeof d === 'string') return { name: d, logo_url: '' }
+  return { name: d.name || '', logo_url: d.logo_url || d.logoUrl || '' }
+}
+
 export default function FilterSidebar({
   filters,
   setFilters,
@@ -112,9 +151,11 @@ export default function FilterSidebar({
   const compounds = (facets.compounds || []).filter((c) =>
     c.toLowerCase().includes(compoundQuery.toLowerCase())
   )
-  const developers = (facets.developers || []).filter((d) =>
-    d.toLowerCase().includes(developerQuery.toLowerCase())
-  )
+
+  // Developers: support both strings AND objects with logo_url
+  const developers = (facets.developers || [])
+    .map(normalizeDev)
+    .filter((d) => d.name.toLowerCase().includes(developerQuery.toLowerCase()))
 
   return (
     <aside className="w-60 bg-bg-sidebar border-r border-line flex flex-col shrink-0 overflow-hidden">
@@ -240,7 +281,7 @@ export default function FilterSidebar({
           </div>
         </Section>
 
-        {/* Developer — search + list */}
+        {/* Developer — search + list WITH LOGOS */}
         <Section title="Developer">
           <SearchBox value={developerQuery} onChange={setDeveloperQuery} placeholder="search ..." />
           <div className="max-h-48 overflow-y-auto mt-2 space-y-1">
@@ -248,7 +289,13 @@ export default function FilterSidebar({
               <p className="text-[11px] text-ink-faint">No developers match</p>
             ) : (
               developers.map((d) => (
-                <Check key={d} label={d} checked={has('developers', d)} onChange={() => toggle('developers', d)} />
+                <CheckWithLogo
+                  key={d.name}
+                  name={d.name}
+                  logoUrl={d.logo_url}
+                  checked={has('developers', d.name)}
+                  onChange={() => toggle('developers', d.name)}
+                />
               ))
             )}
           </div>
