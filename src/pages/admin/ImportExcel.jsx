@@ -209,13 +209,12 @@ export default function ImportExcel() {
         if (updErr) throw updErr
         updatedCount++
 
-        // Replace units for this project (filtered by source_file)
+        // Replace ALL units for this project (old data is wiped on every import)
         if (!parsed.isProjectsOnly && proj.units.length > 0) {
           await supabase
             .from('units')
             .delete()
             .eq('project_id', targetId)
-            .eq('source_file', parsed.fileName || parsed.format)
 
           const unitRows = proj.units.map((u) => ({
             project_id: targetId,
@@ -297,7 +296,8 @@ export default function ImportExcel() {
       <h1 className="text-xl font-bold text-ink mb-1">Import Availability</h1>
       <p className="text-sm text-ink-muted mb-6">
         Upload an Excel sheet or paste a WhatsApp message. Only projects that already exist in
-        the database will be updated — new ones will be skipped.
+        the database will be updated — new ones will be skipped. All existing units for matched
+        projects will be replaced.
       </p>
 
       {/* Tabs */}
